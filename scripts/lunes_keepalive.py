@@ -178,6 +178,15 @@ class LunesKeepAlive:
                     return True
         except Exception:
             pass
+        # 检查 Turnstile 是否未完成（token 字段为空）
+        try:
+            token_input = page.locator('input[name="cf-turnstile-response"]').first
+            if token_input.is_visible(timeout=500):
+                token_value = token_input.input_value(timeout=500)
+                if not token_value or len(token_value) < 10:
+                    return True  # Turnstile 存在但未通过
+        except Exception:
+            pass
         return False
 
     def is_login_page(self, page):

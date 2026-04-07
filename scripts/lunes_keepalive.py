@@ -485,7 +485,7 @@ class LunesKeepAlive:
         with sync_playwright() as p:
             launch_args = {
                 "headless": False,
-                "args": ["--no-sandbox", "--disable-gpu"],
+                "args": ["--no-sandbox", "--disable-gpu", "--disable-http2"],
             }
 
             if PROXY_DSN:

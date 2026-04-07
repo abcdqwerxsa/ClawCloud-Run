@@ -292,15 +292,25 @@ class LunesKeepAlive:
 
     # ==================== 核心流程 ====================
 
-    def open_root(self, page):
-        self.log("访问首页", "STEP")
-        page.goto(f"{BASE_URL}/", timeout=60000)
+    def safe_goto(self, page, url, timeout=60000):
+        """导航到 URL，忽略 Cloudflare 返回的非 2xx 状态码"""
         try:
-            page.wait_for_load_state("domcontentloaded", timeout=60000)
+            page.goto(url, timeout=timeout, wait_until="commit")
+        except Exception as e:
+            err = str(e)
+            if "ERR_HTTP_RESPONSE_CODE_FAILURE" in err or "net::ERR_CONNECTION" in err:
+                self.log(f"导航返回非 2xx（预期内）: {err[:80]}", "WARN")
+            else:
+                raise
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=min(timeout, 30000))
         except Exception:
             pass
         time.sleep(2)
 
+    def open_root(self, page):
+        self.log("访问首页", "STEP")
+        self.safe_goto(page, f"{BASE_URL}/")
         self.wait_cf_clear(page)
         self.log(f"当前 URL: {page.url}")
         self.shot(page, "home")
@@ -311,12 +321,7 @@ class LunesKeepAlive:
             return False
 
         self.log("尝试账号密码登录", "STEP")
-        page.goto(LOGIN_URL, timeout=60000)
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=60000)
-        except Exception:
-            pass
-        time.sleep(2)
+        self.safe_goto(page, LOGIN_URL)
 
         if not self.wait_cf_clear(page):
             self.log("登录页 Cloudflare 未通过", "WARN")
@@ -337,8 +342,7 @@ class LunesKeepAlive:
                 if attempt == 3:
                     self.log("多次尝试后仍未等到登录表单", "ERROR")
                     return False
-                page.goto(LOGIN_URL, timeout=60000)
-                time.sleep(3)
+                self.safe_goto(page, LOGIN_URL)
 
         # 输入凭据
         try:
@@ -402,12 +406,7 @@ class LunesKeepAlive:
                 continue
             seen.add(url)
             try:
-                page.goto(url, timeout=30000)
-                try:
-                    page.wait_for_load_state("domcontentloaded", timeout=30000)
-                except Exception:
-                    pass
-                time.sleep(2)
+                self.safe_goto(page, url, timeout=30000)
                 if self.is_cf_challenge(page):
                     self.log(f"访问 {name} 被 Cloudflare 拦截", "WARN")
                     cf_blocked = True

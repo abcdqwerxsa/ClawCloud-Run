@@ -422,6 +422,21 @@ class LunesKeepAlive:
 
             self.shot(page, "turnstile_passed")
 
+            # Turnstile 通过后，检查凭据是否还在，如果丢失则重新填入
+            try:
+                email_val = page.locator('input[name="email"]').first.input_value(timeout=2000)
+                pwd_val = page.locator('input[name="password"]').first.input_value(timeout=2000)
+                if not email_val or not pwd_val:
+                    self.log("Turnstile 验证后凭据丢失，重新填入")
+                    email = page.locator('input[name="email"]').first
+                    pwd = page.locator('input[name="password"]').first
+                    email.fill(self.email)
+                    time.sleep(0.5)
+                    pwd.fill(self.password)
+                    self.shot(page, "credentials_refilled")
+            except Exception as e:
+                self.log(f"检查凭据失败: {e}", "WARN")
+
         # 提交
         try:
             page.locator('button[type="submit"], .submit-btn').first.click()

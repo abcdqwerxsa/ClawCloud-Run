@@ -198,6 +198,17 @@ class LunesKeepAlive:
     def is_authenticated(self, page):
         if self.is_cf_challenge(page):
             return False
+        # 页面在 chrome-error:// 或非目标域名 → 导航失败，不算已认证
+        try:
+            url = page.url
+            if url.startswith("chrome-error://") or url.startswith("chrome://"):
+                return False
+            host = urlparse(url).hostname or ""
+            target = urlparse(BASE_URL).hostname or ""
+            if host != target:
+                return False
+        except Exception:
+            return False
         return not self.is_login_page(page)
 
     # ==================== Cloudflare 处理 ====================
@@ -293,20 +304,36 @@ class LunesKeepAlive:
     # ==================== 核心流程 ====================
 
     def safe_goto(self, page, url, timeout=60000):
-        """导航到 URL，忽略 Cloudflare 返回的非 2xx 状态码"""
-        try:
-            page.goto(url, timeout=timeout, wait_until="commit")
-        except Exception as e:
-            err = str(e)
-            if "ERR_HTTP_RESPONSE_CODE_FAILURE" in err or "net::ERR_CONNECTION" in err:
-                self.log(f"导航返回非 2xx（预期内）: {err[:80]}", "WARN")
-            else:
-                raise
+        """导航到 URL，遇到非 2xx 或连接错误时重试"""
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                page.goto(url, timeout=timeout, wait_until="commit")
+                break
+            except Exception as e:
+                err = str(e)
+                if "ERR_HTTP_RESPONSE_CODE_FAILURE" in err or "net::ERR_CONNECTION" in err or "net::ERR_ABORTED" in err:
+                    self.log(f"导航失败（第 {attempt} 次）: {err[:80]}", "WARN")
+                    if attempt < max_retries:
+                        time.sleep(3)
+                        continue
+                    # 最后一次还是失败，但不抛异常，让后续逻辑处理
+                else:
+                    raise
         try:
             page.wait_for_load_state("domcontentloaded", timeout=min(timeout, 30000))
         except Exception:
             pass
         time.sleep(2)
+
+        # 如果停留在 chrome-error 页，尝试刷新
+        if page.url.startswith("chrome-error://") or page.url.startswith("chrome://"):
+            self.log("页面停留在错误页，尝试刷新...", "WARN")
+            try:
+                page.goto(url, timeout=timeout, wait_until="commit")
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
 
     def open_root(self, page):
         self.log("访问首页", "STEP")

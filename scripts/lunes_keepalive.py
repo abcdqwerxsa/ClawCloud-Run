@@ -630,9 +630,10 @@ class LunesKeepAlive:
 
         with sync_playwright() as p:
             launch_args = {
-                "headless": True,
+                "headless": False,
                 "args": [
                     "--no-sandbox",
+                    "--disable-gpu",
                 ],
             }
 

@@ -127,6 +127,39 @@
 - 推荐：`TG_BOT_TOKEN`、`TG_CHAT_ID`
 - 自动生成：`LUNES_STORAGE_STATE`
 
+### 本地初始化登录态
+
+如果 `GitHub Actions` 一直卡在 Cloudflare 验证页，推荐改用本地初始化一次登录态：
+
+1. 本地安装并确认 `opencli` 已经可以复用你的真实浏览器会话：
+
+```bash
+opencli web read --url https://betadash.lunes.host/
+```
+
+如果上面的命令可以成功返回页面内容，说明 Browser Bridge 已经打通。
+
+2. 先在你的真实浏览器里手动登录 `https://betadash.lunes.host/`
+
+3. 运行初始化脚本：
+
+```bash
+python scripts/lunes_init_session.py
+```
+
+4. 脚本会做两件事：
+
+- 先执行一次 `opencli web read --url https://betadash.lunes.host/` 触发浏览器桥接
+- 再从 `opencli daemon` 导出 `betadash.lunes.host` 的 cookies，并转换成 `LUNES_STORAGE_STATE`
+
+5. 成功后，仓库目录会生成 `LUNES_STORAGE_STATE.txt`
+
+6. 打开这个文件，把里面整段内容复制到 GitHub 仓库 Secret：
+
+- Secret 名称：`LUNES_STORAGE_STATE`
+
+这样后续 GitHub Actions 就不需要每次从零登录，而是优先复用你本地真实浏览器初始化出来的会话。
+
 ### 重要限制
 
 - 因为 `Lunes Host` 登录页带 Turnstile，`GitHub Actions` 环境下不保证每次都能重新登录成功

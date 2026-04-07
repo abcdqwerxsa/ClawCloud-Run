@@ -425,6 +425,7 @@ class LunesKeepAlive:
         # 提交
         try:
             page.locator('button[type="submit"], .submit-btn').first.click()
+            self.log(f"已点击提交按钮，当前 URL: {page.url}")
         except Exception as e:
             self.log(f"提交失败: {e}", "ERROR")
             return False
@@ -437,6 +438,8 @@ class LunesKeepAlive:
             except Exception:
                 pass
             time.sleep(1)
+
+            self.log(f"  等待中... URL: {page.url} | 标题: {page.title()[:40]}")
 
             if self.is_cf_challenge(page):
                 self.wait_cf_clear(page)

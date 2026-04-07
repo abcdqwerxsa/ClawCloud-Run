@@ -388,6 +388,8 @@ class LunesKeepAlive:
         return False
 
     def is_authenticated(self, page):
+        if self.is_cloudflare_verification_page(page):
+            return False
         return not self.is_login_page(page)
 
     def wait_for_login_form(self, page, retries=3):
@@ -460,8 +462,11 @@ class LunesKeepAlive:
 
         # 处理全页 Cloudflare 验证
         if self.is_cloudflare_verification_page(page):
-            self.wait_for_full_page_challenge(page)
-            self.wait_page_ready(page, timeout=30000)
+            ok = self.wait_for_full_page_challenge(page)
+            if ok:
+                self.wait_page_ready(page, timeout=30000)
+            else:
+                self.log("首页 Cloudflare 验证未通过，将视为未登录", "WARN")
 
         self.log(f"当前 URL: {page.url}")
         self.shot(page, "home")
@@ -477,8 +482,11 @@ class LunesKeepAlive:
 
         # 处理全页 Cloudflare 验证
         if self.is_cloudflare_verification_page(page):
-            self.wait_for_full_page_challenge(page)
-            self.wait_page_ready(page, timeout=30000)
+            ok = self.wait_for_full_page_challenge(page)
+            if ok:
+                self.wait_page_ready(page, timeout=30000)
+            else:
+                self.log("登录页 Cloudflare 验证未通过", "WARN")
 
         self.shot(page, "login")
 
@@ -548,6 +556,7 @@ class LunesKeepAlive:
             (page.url, "当前页面"),
         ]
 
+        cf_blocked = False
         seen = set()
         for url, name in targets:
             if not url or url in seen:
@@ -556,10 +565,20 @@ class LunesKeepAlive:
             try:
                 page.goto(url, timeout=30000)
                 self.wait_page_ready(page, timeout=30000)
+
+                # 检查是否被 Cloudflare 拦截
+                if self.is_cloudflare_verification_page(page):
+                    self.log(f"访问 {name} 被 Cloudflare 拦截", "WARN")
+                    cf_blocked = True
+                    continue
+
                 self.log(f"已访问: {name} ({page.url})", "SUCCESS")
                 time.sleep(2)
             except Exception as e:
                 self.log(f"访问 {name} 失败: {e}", "WARN")
+
+        if cf_blocked:
+            self.log("保活访问被 Cloudflare 拦截，本次保活可能无效", "WARN")
 
         self.shot(page, "done")
 
@@ -668,6 +687,11 @@ class LunesKeepAlive:
                     self.log("当前未登录", "WARN")
                     if not self.login(page):
                         self.notify(False, "Lunes 登录失败")
+                        sys.exit(1)
+                elif self.is_cloudflare_verification_page(page):
+                    self.log("首页仍在 Cloudflare 验证页，尝试登录", "WARN")
+                    if not self.login(page):
+                        self.notify(False, "Lunes 登录失败（Cloudflare 拦截）")
                         sys.exit(1)
                 else:
                     self.log("已通过历史会话登录", "SUCCESS")

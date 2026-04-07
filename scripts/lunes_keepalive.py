@@ -24,8 +24,10 @@ import requests
 # patchright 是 playwright 的反检测分支，内置绕过 Cloudflare 能力
 try:
     from patchright.sync_api import sync_playwright
+    _BROWSER_LIB = "patchright"
 except ImportError:
     from playwright.sync_api import sync_playwright
+    _BROWSER_LIB = "playwright"
 
 # ==================== 配置 ====================
 BASE_URL = os.environ.get("LUNES_BASE_URL", "https://betadash.lunes.host").rstrip("/")
@@ -312,8 +314,8 @@ class LunesKeepAlive:
     def wait_for_full_page_challenge(self, page, timeout=None):
         """等待 Cloudflare 全页验证（"Just a moment..."）自动通过。
 
-        全页验证通常是 Cloudflare 的 JS Challenge 或 Managed Challenge，
-        不需要手动点击，浏览器会自动通过。只需等待页面跳转离开即可。
+        全页验证通常是 Cloudflare 的 JS Challenge 或 Managed Challenge。
+        策略：先等待自动通过，只在必要时点击一次复选框（多次点击会被判定为机器人）。
         """
         if timeout is None:
             timeout = CLOUDFLARE_FULL_PAGE_TIMEOUT
@@ -327,6 +329,7 @@ class LunesKeepAlive:
 
         start = time.time()
         check_interval = 2
+        clicked_once = False  # 只点击一次
 
         while time.time() - start < timeout:
             elapsed = int(time.time() - start)
@@ -341,16 +344,20 @@ class LunesKeepAlive:
                 self.log(f"Cloudflare Turnstile token 已就绪（耗时 {elapsed} 秒）", "SUCCESS")
                 return True
 
-            # 尝试点击控件（Managed Challenge 可能有复选框）
-            if elapsed > 5 and elapsed % 6 == 0:
+            # 只点击一次复选框，10 秒后执行（给页面充足加载时间）
+            if not clicked_once and elapsed >= 10:
                 clicked = self.click_cloudflare_widget(page)
+                clicked_once = True
                 if clicked:
+                    self.log("已点击验证控件，等待验证完成...", "STEP")
                     self.shot(page, f"challenge_clicked_{elapsed}s")
-                    # 点击后多等几秒看效果
-                    time.sleep(4)
+                    # 点击后等待较长时间让验证完成
+                    time.sleep(8)
                     if not self.is_cloudflare_verification_page(page):
-                        self.log(f"Cloudflare 验证点击后通过（耗时 {elapsed} 秒）", "SUCCESS")
+                        self.log(f"Cloudflare 验证通过（耗时 {elapsed} 秒）", "SUCCESS")
                         return True
+                else:
+                    self.log("未找到可点击的验证控件，继续等待自动通过", "WARN")
 
             # 模拟人类鼠标移动（辅助反检测）
             if elapsed % 5 == 0 and elapsed > 0:
@@ -619,6 +626,7 @@ class LunesKeepAlive:
         self.log(f"站点: {BASE_URL}")
         self.log(f"账号: {self.email or '未配置'}")
         self.log(f"会话状态: {'有' if self.storage_state_b64 else '无'}")
+        self.log(f"浏览器引擎: {_BROWSER_LIB}")
 
         if not self.storage_state_b64 and (not self.email or not self.password):
             self.log(

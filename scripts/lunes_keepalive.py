@@ -395,6 +395,14 @@ class LunesKeepAlive:
         self.shot(page, "login_filled")
         time.sleep(2)
 
+        # 检查是否有 Turnstile 验证码
+        if self.is_cf_challenge(page):
+            self.log("登录表单包含 Cloudflare Turnstile，等待解决")
+            if not self.wait_cf_clear(page, timeout=60):
+                self.log("Turnstile 验证超时", "ERROR")
+                self.shot(page, "turnstile_timeout")
+                return False
+
         # 提交
         try:
             page.locator('button[type="submit"], .submit-btn').first.click()

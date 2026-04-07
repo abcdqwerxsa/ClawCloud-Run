@@ -31,6 +31,7 @@
 | `TG_BOT_TOKEN` | ✅ | Telegram Bot Token |
 | `TG_CHAT_ID` | ✅ | Telegram Chat ID |
 | `GH_SESSION` | ❌ | 自动生成，无需手动添加 |
+| `GH_TOTP_SECRET` | 推荐 | GitHub Authenticator App 的 TOTP 密钥，配置后可自动填写 2FA 验证码 |
 | `LUNES_EMAIL` | Lunes 可选 | Lunes Host 登录邮箱 |
 | `LUNES_PASSWORD` | Lunes 可选 | Lunes Host 登录密码 |
 | `LUNES_STORAGE_STATE` | Lunes 可选 | 自动生成的浏览器会话，建议保留 |
@@ -64,21 +65,67 @@
 
 ### 需要添加的 Secrets
 
+如果你只是想把 `Lunes Host` 跑起来，最低只需要这 3 个：
+
+| Name | 是否必填 | 用途 |
+|------|----------|------|
+| `LUNES_EMAIL` | ✅ 首次建议必填 | Lunes 登录邮箱 |
+| `LUNES_PASSWORD` | ✅ 首次建议必填 | Lunes 登录密码 |
+| `REPO_TOKEN` | ✅ | 用来自动回写 `LUNES_STORAGE_STATE`，否则每次都很难稳定续期 |
+
+推荐再加上通知：
+
+| Name | 是否必填 | 用途 |
+|------|----------|------|
+| `TG_BOT_TOKEN` | 推荐 | Telegram 通知 token |
+| `TG_CHAT_ID` | 推荐 | Telegram 接收通知的 chat id |
+
+下面这个 Secret 不需要你一开始手填，脚本首次成功后会自动生成：
+
+| Name | 是否必填 | 用途 |
+|------|----------|------|
+| `LUNES_STORAGE_STATE` | 否，自动生成 | 保存浏览器登录态。后续保活优先靠它，不再频繁重新登录 |
+
+完整说明如下：
+
 | Name | 必需 | 说明 |
 |------|------|------|
-| `LUNES_EMAIL` | 建议 | Lunes 登录邮箱 |
-| `LUNES_PASSWORD` | 建议 | Lunes 登录密码 |
+| `LUNES_EMAIL` | 首次建议 ✅ | Lunes 登录邮箱 |
+| `LUNES_PASSWORD` | 首次建议 ✅ | Lunes 登录密码 |
 | `LUNES_STORAGE_STATE` | 否 | 首次成功后自动生成，后续保活优先用它 |
 | `REPO_TOKEN` | ✅ | 用于自动刷新 `LUNES_STORAGE_STATE` |
 | `TG_BOT_TOKEN` | 推荐 | 失败/成功通知 |
 | `TG_CHAT_ID` | 推荐 | 失败/成功通知 |
 
+### 默认不用配置的变量
+
+如果你不改代码，下面这些参数都有默认值，不需要额外在 GitHub Secrets / Variables 里配置：
+
+| 变量名 | 默认值 | 作用 |
+|--------|--------|------|
+| `LUNES_BASE_URL` | `https://betadash.lunes.host` | Lunes 站点地址 |
+| `LUNES_STORAGE_SECRET_NAME` | `LUNES_STORAGE_STATE` | 登录态保存到哪个 Secret 名称 |
+| `LUNES_PROXY_DSN` | 空 | 浏览器代理 |
+| `LUNES_TURNSTILE_WAIT` | `25` | 等待 Turnstile token 的秒数 |
+| `LUNES_POST_LOGIN_WAIT` | `20` | 登录提交后等待跳转的秒数 |
+| `LUNES_CLOUDFLARE_CLICK_DELAY` | `6` | 发现 Cloudflare challenge 后，点击前等待的秒数 |
+| `LUNES_CLOUDFLARE_MAX_ATTEMPTS` | `3` | 自动点击 Cloudflare challenge 的最大尝试次数 |
+
 ### 首次初始化建议
 
 1. 先添加 `LUNES_EMAIL`、`LUNES_PASSWORD`、`REPO_TOKEN`
-2. 手动运行 `Lunes Host 登录保活` workflow
-3. 如果站点允许本次自动通过 Turnstile，脚本会自动生成并更新 `LUNES_STORAGE_STATE`
-4. 后续定时任务就会优先复用这个会话，稳定性会比每次重新登录更高
+2. 建议同时添加 `TG_BOT_TOKEN`、`TG_CHAT_ID`，方便看失败截图和通知
+3. 手动运行 `Lunes Host 登录保活` workflow
+4. 如果站点允许本次自动通过 Turnstile，脚本会自动生成并更新 `LUNES_STORAGE_STATE`
+5. 后续定时任务就会优先复用这个会话，稳定性会比每次重新登录更高
+
+### 一句话结论
+
+对 `Lunes Host` 来说，你实际需要关心的只有：
+
+- 必填：`LUNES_EMAIL`、`LUNES_PASSWORD`、`REPO_TOKEN`
+- 推荐：`TG_BOT_TOKEN`、`TG_CHAT_ID`
+- 自动生成：`LUNES_STORAGE_STATE`
 
 ### 重要限制
 

@@ -318,6 +318,33 @@ class LunesKeepAlive:
     def is_authenticated(self, page):
         return not self.is_login_page(page)
 
+    def wait_for_login_form(self, page, retries=3):
+        """等待登录表单可交互。若未出现，则尝试处理 challenge 并刷新重试。"""
+        for attempt in range(1, retries + 1):
+            try:
+                page.locator('input[name="email"]').first.wait_for(state="visible", timeout=10000)
+                page.locator('input[name="password"]').first.wait_for(state="visible", timeout=10000)
+                self.log(f"登录表单已就绪（第 {attempt} 次）", "SUCCESS")
+                return True
+            except Exception:
+                self.log(f"第 {attempt} 次等待登录表单失败", "WARN")
+                self.handle_cloudflare_challenge(page, f"等待登录表单第 {attempt} 次")
+                self.shot(page, f"login_form_wait_{attempt}")
+
+                if attempt < retries:
+                    try:
+                        page.reload(timeout=30000)
+                        self.wait_page_ready(page, timeout=30000)
+                    except Exception:
+                        try:
+                            page.goto(LOGIN_URL, timeout=30000)
+                            self.wait_page_ready(page, timeout=30000)
+                        except Exception:
+                            pass
+
+        self.log("多次尝试后仍未等到登录表单", "ERROR")
+        return False
+
     def wait_turnstile(self, page):
         self.log(f"等待 Turnstile 就绪，最长 {TURNSTILE_WAIT} 秒", "STEP")
         self.handle_cloudflare_challenge(page, "登录前")
@@ -356,6 +383,9 @@ class LunesKeepAlive:
         self.wait_page_ready(page, timeout=60000)
         self.handle_cloudflare_challenge(page, "打开登录页")
         self.shot(page, "login")
+
+        if not self.wait_for_login_form(page):
+            return False
 
         try:
             email_input = page.locator('input[name="email"]').first

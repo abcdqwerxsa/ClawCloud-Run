@@ -26,7 +26,7 @@ jobs:
 
       - name: 安装依赖
         run: |
-          pip install playwright requests pynacl
+          pip install playwright requests pynacl pyotp
           playwright install chromium
           playwright install-deps
 

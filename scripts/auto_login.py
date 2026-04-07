@@ -180,6 +180,7 @@ class AutoLogin:
         self.username = os.environ.get('GH_USERNAME')
         self.password = os.environ.get('GH_PASSWORD')
         self.gh_session = os.environ.get('GH_SESSION', '').strip()
+        self.totp_secret = os.environ.get('GH_TOTP_SECRET', '').replace(' ', '').strip()
         self.tg = Telegram()
         self.secret = SecretUpdater()
         self.shots = []
@@ -299,6 +300,23 @@ class AutoLogin:
 <tg-spoiler>{value}</tg-spoiler>
 """)
             self.log("已通过 Telegram 发送 Cookie", "SUCCESS")
+
+    def get_totp_code(self):
+        """优先使用 GH_TOTP_SECRET 自动生成 2FA 验证码"""
+        if not self.totp_secret:
+            return None
+
+        try:
+            import pyotp
+
+            code = pyotp.TOTP(self.totp_secret).now()
+            if code:
+                self.log("已通过 GH_TOTP_SECRET 自动生成验证码", "SUCCESS")
+                return code
+        except Exception as e:
+            self.log(f"自动生成验证码失败: {e}", "WARN")
+
+        return None
     
     def wait_device(self, page):
         """等待设备验证"""
@@ -402,20 +420,28 @@ class AutoLogin:
                     time.sleep(1) # 等待菜单出现
                     self.shot(page, "点击more_options后")
 
-                    # 点击 "Authenticator app"
-                    auth_app_button = page.locator('button:has-text("Authenticator app")').first
-                    if auth_app_button.is_visible(timeout=2000):
-                        auth_app_button.click()
-                        self.log("已选择 'Authenticator app'", "SUCCESS")
-                        time.sleep(2)
-                        page.wait_for_load_state('networkidle', timeout=15000)
-                        shot = self.shot(page, "切换到验证码输入页") # 更新截图
+                    option_selectors = [
+                        ('button:has-text("GitHub Mobile")', 'GitHub Mobile'),
+                        ('button:has-text("GitHub Mobile app")', 'GitHub Mobile'),
+                        ('button:has-text("Authenticator app")', 'Authenticator app'),
+                    ]
+                    for selector, label in option_selectors:
+                        option_button = page.locator(selector).first
+                        if option_button.is_visible(timeout=2000):
+                            option_button.click()
+                            self.log(f"已选择 '{label}'", "SUCCESS")
+                            time.sleep(2)
+                            page.wait_for_load_state('networkidle', timeout=15000)
+                            shot = self.shot(page, "切换到验证码输入页")
+                            break
             except Exception as e:
                 self.log(f"切换验证方式时出错: {e}", "WARN")
 
         # (保留) 先尝试点击"Use an authentication app"或类似按钮（如果在 mobile 页面）
         try:
             more_options = [
+                'a:has-text("GitHub Mobile")',
+                'button:has-text("GitHub Mobile")',
                 'a:has-text("Use an authentication app")',
                 'a:has-text("Enter a code")',
                 'button:has-text("Use an authentication app")',
@@ -437,27 +463,33 @@ class AutoLogin:
         except:
             pass
 
+        code = self.get_totp_code()
+
         # 发送提示并等待验证码
-        self.tg.send(f"""🔐 <b>需要验证码登录</b>
+        if not code:
+            self.tg.send(f"""🔐 <b>需要验证码登录</b>
 
 用户{self.username}正在登录，请在 Telegram 里发送：
 <code>/code 你的6位验证码</code>
 
 等待时间：{TWO_FACTOR_WAIT} 秒""")
-        if shot:
-            self.tg.photo(shot, "两步验证页面")
+            if shot:
+                self.tg.photo(shot, "两步验证页面")
 
-        self.log(f"等待验证码（{TWO_FACTOR_WAIT}秒）...", "WARN")
-        code = self.tg.wait_code(timeout=TWO_FACTOR_WAIT)
+            self.log(f"等待验证码（{TWO_FACTOR_WAIT}秒）...", "WARN")
+            code = self.tg.wait_code(timeout=TWO_FACTOR_WAIT)
 
-        if not code:
-            self.log("等待验证码超时", "ERROR")
-            self.tg.send("❌ <b>等待验证码超时</b>")
-            return False
+            if not code:
+                self.log("等待验证码超时", "ERROR")
+                self.tg.send("❌ <b>等待验证码超时</b>")
+                return False
 
         # 不打印验证码明文，只提示收到
         self.log("收到验证码，正在填入...", "SUCCESS")
-        self.tg.send("✅ 收到验证码，正在填入...")
+        if self.totp_secret:
+            self.tg.send("✅ 已自动生成验证码，正在填入...")
+        else:
+            self.tg.send("✅ 收到验证码，正在填入...")
 
         # 常见 OTP 输入框 selector（优先级排序）
         selectors = [
@@ -711,6 +743,7 @@ class AutoLogin:
         self.log(f"用户名: {self.username}")
         self.log(f"Session: {'有' if self.gh_session else '无'}")
         self.log(f"密码: {'有' if self.password else '无'}")
+        self.log(f"TOTP: {'有' if self.totp_secret else '无'}")
         self.log(f"登录入口: {LOGIN_ENTRY_URL}")
         
         if not self.username or not self.password:

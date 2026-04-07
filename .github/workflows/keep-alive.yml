@@ -38,7 +38,8 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
-        run: python scripts/auto_login.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u scripts/auto_login.py
         
 #      - name: 私有仓库 Actions 保活
 #        run: |

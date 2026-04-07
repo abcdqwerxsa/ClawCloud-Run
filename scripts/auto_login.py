@@ -194,7 +194,7 @@ class AutoLogin:
     def log(self, msg, level="INFO"):
         icons = {"INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌", "WARN": "⚠️", "STEP": "🔹"}
         line = f"{icons.get(level, '•')} {msg}"
-        print(line)
+        print(line, flush=True)
         self.logs.append(line)
     
     def shot(self, page, name):
@@ -736,9 +736,9 @@ class AutoLogin:
                    self.tg.photo(self.shots[-1], "完成")
     
     def run(self):
-        print("\n" + "="*50)
-        print("🚀 ClawCloud 自动登录")
-        print("="*50 + "\n")
+        print("\n" + "="*50, flush=True)
+        print("🚀 ClawCloud 自动登录", flush=True)
+        print("="*50 + "\n", flush=True)
         
         self.log(f"用户名: {self.username}")
         self.log(f"Session: {'有' if self.gh_session else '无'}")
@@ -864,7 +864,7 @@ class AutoLogin:
                     if new:
                         self.save_cookie(new)
                     self.notify(True)
-                    print("\n✅ 成功！\n")
+                    print("\n✅ 成功！\n", flush=True)
                     return
                 
 
@@ -913,11 +913,11 @@ class AutoLogin:
                     self.log("未获取到新 Cookie", "WARN")
                 
                 self.notify(True)
-                print("\n" + "="*50)
-                print("✅ 成功！")
+                print("\n" + "="*50, flush=True)
+                print("✅ 成功！", flush=True)
                 if self.detected_region:
-                    print(f"📍 区域: {self.detected_region}")
-                print("="*50 + "\n")
+                    print(f"📍 区域: {self.detected_region}", flush=True)
+                print("="*50 + "\n", flush=True)
                 
             except Exception as e:
                 self.log(f"异常: {e}", "ERROR")

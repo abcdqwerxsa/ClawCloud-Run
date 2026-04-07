@@ -30,7 +30,8 @@ PROXY_DSN = os.environ.get("LUNES_PROXY_DSN", os.environ.get("PROXY_DSN", "")).s
 TURNSTILE_WAIT = int(os.environ.get("LUNES_TURNSTILE_WAIT", "25"))
 POST_LOGIN_WAIT = int(os.environ.get("LUNES_POST_LOGIN_WAIT", "20"))
 CLOUDFLARE_CLICK_DELAY = int(os.environ.get("LUNES_CLOUDFLARE_CLICK_DELAY", "6"))
-CLOUDFLARE_MAX_ATTEMPTS = int(os.environ.get("LUNES_CLOUDFLARE_MAX_ATTEMPTS", "3"))
+CLOUDFLARE_MAX_ATTEMPTS = int(os.environ.get("LUNES_CLOUDFLARE_MAX_ATTEMPTS", "5"))
+CLOUDFLARE_FULL_PAGE_TIMEOUT = int(os.environ.get("LUNES_CLOUDFLARE_FULL_PAGE_TIMEOUT", "45"))
 
 
 class Telegram:
@@ -134,7 +135,7 @@ class LunesKeepAlive:
     def log(self, msg, level="INFO"):
         icons = {"INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌", "WARN": "⚠️", "STEP": "🔹"}
         line = f"{icons.get(level, '•')} {msg}"
-        print(line)
+        print(line, flush=True)
         self.logs.append(line)
 
     def shot(self, page, name):
@@ -303,57 +304,66 @@ class LunesKeepAlive:
 
         return False
 
-    def handle_cloudflare_challenge(self, page, stage):
-        if self.get_turnstile_token(page):
-            self.log("Turnstile token 已就绪", "SUCCESS")
-            return True
+    def wait_for_full_page_challenge(self, page, timeout=None):
+        """等待 Cloudflare 全页验证（"Just a moment..."）自动通过。
 
+        全页验证通常是 Cloudflare 的 JS Challenge 或 Managed Challenge，
+        不需要手动点击，浏览器会自动通过。只需等待页面跳转离开即可。
+        """
+        if timeout is None:
+            timeout = CLOUDFLARE_FULL_PAGE_TIMEOUT
+
+        # 先确认确实是全页验证
         if not self.is_cloudflare_verification_page(page):
             return False
 
-        self.log(f"{stage}: 检测到 Cloudflare 验证，先等待 {CLOUDFLARE_CLICK_DELAY} 秒", "WARN")
-        self.shot(page, "cloudflare_detected")
-        time.sleep(CLOUDFLARE_CLICK_DELAY)
+        self.log(f"检测到 Cloudflare 全页验证，最长等待 {timeout} 秒", "WARN")
+        self.shot(page, "full_page_challenge")
 
-        for attempt in range(1, CLOUDFLARE_MAX_ATTEMPTS + 1):
-            if self.get_turnstile_token(page):
-                self.log("Cloudflare 验证已通过", "SUCCESS")
-                return True
+        start = time.time()
+        check_interval = 2
 
+        while time.time() - start < timeout:
+            elapsed = int(time.time() - start)
+
+            # 检查是否已自动通过（页面已离开验证页）
             if not self.is_cloudflare_verification_page(page):
-                self.log("Cloudflare 验证页已离开", "SUCCESS")
+                self.log(f"Cloudflare 全页验证已通过（耗时 {elapsed} 秒）", "SUCCESS")
                 return True
 
-            clicked = self.click_cloudflare_widget(page)
-            if not clicked:
-                self.log(f"第 {attempt} 次未找到可点击的 Cloudflare 控件", "WARN")
-            else:
-                self.shot(page, f"cloudflare_clicked_{attempt}")
-
-            for _ in range(8):
-                time.sleep(1)
-                if self.get_turnstile_token(page):
-                    self.log("Cloudflare 验证已通过", "SUCCESS")
-                    return True
-                if not self.is_cloudflare_verification_page(page):
-                    self.log("Cloudflare 验证页已离开", "SUCCESS")
-                    return True
-
+            # 检查 Turnstile token 是否已就绪
             if self.get_turnstile_token(page):
-                self.log("Cloudflare 验证已通过", "SUCCESS")
+                self.log(f"Cloudflare Turnstile token 已就绪（耗时 {elapsed} 秒）", "SUCCESS")
                 return True
 
-            try:
-                page.wait_for_load_state("networkidle", timeout=5000)
-            except Exception:
-                pass
+            # 尝试点击控件（Managed Challenge 可能有复选框）
+            if elapsed > 5 and elapsed % 6 == 0:
+                clicked = self.click_cloudflare_widget(page)
+                if clicked:
+                    self.shot(page, f"challenge_clicked_{elapsed}s")
+                    # 点击后多等几秒看效果
+                    time.sleep(4)
+                    if not self.is_cloudflare_verification_page(page):
+                        self.log(f"Cloudflare 验证点击后通过（耗时 {elapsed} 秒）", "SUCCESS")
+                        return True
 
-            try:
-                page.mouse.move(200, 200)
-            except Exception:
-                pass
+            # 模拟人类鼠标移动（辅助反检测）
+            if elapsed % 5 == 0 and elapsed > 0:
+                try:
+                    import random as _r
+                    page.mouse.move(
+                        200 + _r.randint(-100, 100),
+                        200 + _r.randint(-100, 100),
+                    )
+                except Exception:
+                    pass
 
-        self.log("Cloudflare 验证未明确通过，将继续后续流程", "WARN")
+            if elapsed > 0 and elapsed % 10 == 0:
+                self.log(f"  全页验证等待中... ({elapsed}/{timeout}秒)")
+
+            time.sleep(check_interval)
+
+        self.log(f"Cloudflare 全页验证超时 ({timeout}秒)", "WARN")
         return False
 
     def is_login_page(self, page):
@@ -383,6 +393,11 @@ class LunesKeepAlive:
     def wait_for_login_form(self, page, retries=3):
         """等待登录表单可交互。若未出现，则尝试处理 challenge 并刷新重试。"""
         for attempt in range(1, retries + 1):
+            # 先处理全页 Cloudflare 验证
+            if self.is_cloudflare_verification_page(page):
+                self.wait_for_full_page_challenge(page)
+                self.wait_page_ready(page, timeout=30000)
+
             try:
                 page.locator('input[name="email"]').first.wait_for(state="visible", timeout=10000)
                 page.locator('input[name="password"]').first.wait_for(state="visible", timeout=10000)
@@ -390,26 +405,37 @@ class LunesKeepAlive:
                 return True
             except Exception:
                 self.log(f"第 {attempt} 次等待登录表单失败", "WARN")
-                self.handle_cloudflare_challenge(page, f"等待登录表单第 {attempt} 次")
                 self.shot(page, f"login_form_wait_{attempt}")
+
+                # 再次尝试全页验证（可能刷新后又出现）
+                if self.is_cloudflare_verification_page(page):
+                    self.wait_for_full_page_challenge(page)
+                    self.wait_page_ready(page, timeout=30000)
+                    # 全页验证通过后再试一次找表单
+                    try:
+                        page.locator('input[name="email"]').first.wait_for(state="visible", timeout=10000)
+                        page.locator('input[name="password"]').first.wait_for(state="visible", timeout=10000)
+                        self.log(f"验证通过后登录表单已就绪（第 {attempt} 次）", "SUCCESS")
+                        return True
+                    except Exception:
+                        pass
 
                 if attempt < retries:
                     try:
-                        page.reload(timeout=30000)
-                        self.wait_page_ready(page, timeout=30000)
+                        page.goto(LOGIN_URL, timeout=60000)
+                        self.wait_page_ready(page, timeout=60000)
                     except Exception:
-                        try:
-                            page.goto(LOGIN_URL, timeout=30000)
-                            self.wait_page_ready(page, timeout=30000)
-                        except Exception:
-                            pass
+                        pass
 
         self.log("多次尝试后仍未等到登录表单", "ERROR")
         return False
 
     def wait_turnstile(self, page):
         self.log(f"等待 Turnstile 就绪，最长 {TURNSTILE_WAIT} 秒", "STEP")
-        self.handle_cloudflare_challenge(page, "登录前")
+
+        # 先处理全页验证（如果存在）
+        if self.is_cloudflare_verification_page(page):
+            self.wait_for_full_page_challenge(page)
 
         for i in range(TURNSTILE_WAIT):
             token = self.get_turnstile_token(page)
@@ -417,8 +443,8 @@ class LunesKeepAlive:
                 self.log("Turnstile 已生成 token", "SUCCESS")
                 return True
 
-            if self.is_cloudflare_verification_page(page) and i > 0 and i % 6 == 0:
-                self.handle_cloudflare_challenge(page, f"等待 Turnstile 第 {i} 秒")
+            if self.is_cloudflare_verification_page(page) and i > 0 and i % 10 == 0:
+                self.wait_for_full_page_challenge(page)
 
             time.sleep(1)
             if i > 0 and i % 5 == 0:
@@ -431,7 +457,12 @@ class LunesKeepAlive:
         self.log("访问首页", "STEP")
         page.goto(f"{BASE_URL}/", timeout=60000)
         self.wait_page_ready(page, timeout=60000)
-        self.handle_cloudflare_challenge(page, "访问首页")
+
+        # 处理全页 Cloudflare 验证
+        if self.is_cloudflare_verification_page(page):
+            self.wait_for_full_page_challenge(page)
+            self.wait_page_ready(page, timeout=30000)
+
         self.log(f"当前 URL: {page.url}")
         self.shot(page, "home")
 
@@ -443,7 +474,12 @@ class LunesKeepAlive:
         self.log("会话失效，尝试账号密码登录", "STEP")
         page.goto(LOGIN_URL, timeout=60000)
         self.wait_page_ready(page, timeout=60000)
-        self.handle_cloudflare_challenge(page, "打开登录页")
+
+        # 处理全页 Cloudflare 验证
+        if self.is_cloudflare_verification_page(page):
+            self.wait_for_full_page_challenge(page)
+            self.wait_page_ready(page, timeout=30000)
+
         self.shot(page, "login")
 
         if not self.wait_for_login_form(page):
@@ -481,7 +517,10 @@ class LunesKeepAlive:
         deadline = time.time() + POST_LOGIN_WAIT
         while time.time() < deadline:
             self.wait_page_ready(page, timeout=5000)
-            self.handle_cloudflare_challenge(page, "提交登录后")
+            # 处理登录后可能出现的全页验证
+            if self.is_cloudflare_verification_page(page):
+                self.wait_for_full_page_challenge(page)
+                self.wait_page_ready(page, timeout=10000)
             if self.is_authenticated(page):
                 self.log("Lunes 登录成功", "SUCCESS")
                 self.shot(page, "login_success")
@@ -549,9 +588,9 @@ class LunesKeepAlive:
                     self.tg.photo(shot, shot)
 
     def run(self):
-        print("\n" + "=" * 50)
-        print("🚀 Lunes Host 自动登录保活")
-        print("=" * 50 + "\n")
+        print("\n" + "=" * 50, flush=True)
+        print("🚀 Lunes Host 自动登录保活", flush=True)
+        print("=" * 50 + "\n", flush=True)
 
         self.log(f"站点: {BASE_URL}")
         self.log(f"账号: {self.email or '未配置'}")
@@ -636,7 +675,7 @@ class LunesKeepAlive:
                 self.keepalive(page)
                 self.save_storage_state(context)
                 self.notify(True)
-                print("\n✅ 成功！\n")
+                print("\n✅ 成功！\n", flush=True)
             except Exception as e:
                 self.log(f"异常: {e}", "ERROR")
                 self.shot(page, "exception")

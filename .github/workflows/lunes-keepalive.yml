@@ -26,9 +26,9 @@ jobs:
 
       - name: 安装依赖
         run: |
-          pip install playwright requests pynacl
-          playwright install chromium
-          playwright install-deps
+          pip install patchright requests pynacl
+          patchright install chromium
+          patchright install-deps
 
       - name: 运行 Lunes 保活
         env:

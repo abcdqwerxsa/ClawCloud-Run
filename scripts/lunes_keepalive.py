@@ -20,7 +20,12 @@ import traceback
 from urllib.parse import urlparse
 
 import requests
-from playwright.sync_api import sync_playwright
+
+# patchright 是 playwright 的反检测分支，内置绕过 Cloudflare 能力
+try:
+    from patchright.sync_api import sync_playwright
+except ImportError:
+    from playwright.sync_api import sync_playwright
 
 # ==================== 配置 ====================
 BASE_URL = os.environ.get("LUNES_BASE_URL", "https://betadash.lunes.host").rstrip("/")
@@ -628,9 +633,6 @@ class LunesKeepAlive:
                 "headless": True,
                 "args": [
                     "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars",
-                    "--exclude-switches=enable-automation",
                 ],
             }
 
@@ -664,21 +666,6 @@ class LunesKeepAlive:
 
             context = browser.new_context(**context_kwargs)
             page = context.new_page()
-
-            page.add_init_script(
-                """
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-                window.chrome = { runtime: {} };
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications'
-                        ? Promise.resolve({ state: Notification.permission })
-                        : originalQuery(parameters)
-                );
-                """
-            )
 
             try:
                 self.open_root(page)

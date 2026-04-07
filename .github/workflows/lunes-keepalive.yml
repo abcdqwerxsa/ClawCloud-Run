@@ -1,0 +1,41 @@
+name: Lunes Host 登录保活
+
+on:
+  schedule:
+    - cron: '0 0 */7 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lunes-keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          pip install playwright requests pynacl
+          playwright install chromium
+          playwright install-deps
+
+      - name: 运行 Lunes 保活
+        env:
+          LUNES_EMAIL: ${{ secrets.LUNES_EMAIL }}
+          LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD }}
+          LUNES_STORAGE_STATE: ${{ secrets.LUNES_STORAGE_STATE }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: python scripts/lunes_keepalive.py

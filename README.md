@@ -4,7 +4,9 @@
 
 ---
 
-> 自动登录 ClawCloud，保持账户活跃，支持设备验证 + 两步验证
+> 自动登录保活，当前支持：
+> - ClawCloud（GitHub 登录，支持设备验证 + 两步验证）
+> - Lunes Host（邮箱密码登录，优先复用已登录会话）
 
 ![设备验证](./3.png)
 
@@ -29,6 +31,60 @@
 | `TG_BOT_TOKEN` | ✅ | Telegram Bot Token |
 | `TG_CHAT_ID` | ✅ | Telegram Chat ID |
 | `GH_SESSION` | ❌ | 自动生成，无需手动添加 |
+| `LUNES_EMAIL` | Lunes 可选 | Lunes Host 登录邮箱 |
+| `LUNES_PASSWORD` | Lunes 可选 | Lunes Host 登录密码 |
+| `LUNES_STORAGE_STATE` | Lunes 可选 | 自动生成的浏览器会话，建议保留 |
+
+> `ClawCloud` 使用 `GH_*` 这组 Secret；`Lunes Host` 使用 `LUNES_*` 这组 Secret。  
+> 两个工作流互相独立，可以只配置你需要的那一组。
+
+---
+
+## 🆕 Lunes Host 登录保活说明
+
+目标站点：`https://betadash.lunes.host/`
+
+### 登录方式差异
+
+`Lunes Host` 不是 GitHub OAuth，它是：
+
+- 邮箱 + 密码登录
+- 登录页带 Cloudflare Turnstile
+- 页面提示：超过 6 个月不活跃会重置密码
+
+所以这个项目对 `Lunes` 的实现策略不是“每次都从零登录”，而是：
+
+1. 优先加载上次成功登录后保存的浏览器会话 `LUNES_STORAGE_STATE`
+2. 遇到 Cloudflare challenge 时，先等待页面稳定，再自动点击验证框
+3. 访问首页完成保活
+4. 成功后自动刷新 `LUNES_STORAGE_STATE`
+5. 如果会话失效，再尝试用 `LUNES_EMAIL` 和 `LUNES_PASSWORD` 重新登录
+
+`Lunes Host 登录保活` workflow 当前定时为：每 7 天 UTC `00:00` 运行一次。
+
+### 需要添加的 Secrets
+
+| Name | 必需 | 说明 |
+|------|------|------|
+| `LUNES_EMAIL` | 建议 | Lunes 登录邮箱 |
+| `LUNES_PASSWORD` | 建议 | Lunes 登录密码 |
+| `LUNES_STORAGE_STATE` | 否 | 首次成功后自动生成，后续保活优先用它 |
+| `REPO_TOKEN` | ✅ | 用于自动刷新 `LUNES_STORAGE_STATE` |
+| `TG_BOT_TOKEN` | 推荐 | 失败/成功通知 |
+| `TG_CHAT_ID` | 推荐 | 失败/成功通知 |
+
+### 首次初始化建议
+
+1. 先添加 `LUNES_EMAIL`、`LUNES_PASSWORD`、`REPO_TOKEN`
+2. 手动运行 `Lunes Host 登录保活` workflow
+3. 如果站点允许本次自动通过 Turnstile，脚本会自动生成并更新 `LUNES_STORAGE_STATE`
+4. 后续定时任务就会优先复用这个会话，稳定性会比每次重新登录更高
+
+### 重要限制
+
+- 因为 `Lunes Host` 登录页带 Turnstile，`GitHub Actions` 环境下不保证每次都能重新登录成功
+- 一旦 `LUNES_STORAGE_STATE` 已建立，后续保活通常只需要复用会话，不会频繁触发重新登录
+- 如果后续日志里持续提示还停留在登录页，通常就是会话过期且本次 Turnstile 未通过，需要重新手动触发一次初始化
 
 ---
 

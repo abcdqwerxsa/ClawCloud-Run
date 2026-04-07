@@ -491,13 +491,17 @@ class LunesKeepAlive:
             if PROXY_DSN:
                 try:
                     parsed = urlparse(PROXY_DSN)
-                    proxy_config = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+                    # Playwright proxy server scheme: socks5/socks4 kept as-is, all others → http
+                    scheme = parsed.scheme.lower()
+                    if scheme not in ("socks5", "socks4"):
+                        scheme = "http"
+                    proxy_config = {"server": f"{scheme}://{parsed.hostname}:{parsed.port}"}
                     if parsed.username:
                         proxy_config["username"] = parsed.username
                     if parsed.password:
                         proxy_config["password"] = parsed.password
                     launch_args["proxy"] = proxy_config
-                    self.log(f"启用代理: {parsed.hostname}:{parsed.port}")
+                    self.log(f"启用代理: {parsed.hostname}:{parsed.port} (scheme→{scheme})")
                 except Exception as e:
                     self.log(f"代理配置失败: {e}", "WARN")
 

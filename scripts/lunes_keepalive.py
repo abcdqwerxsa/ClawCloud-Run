@@ -1,13 +1,10 @@
 """
 Lunes Host 自动登录保活
+- 使用 Scrapling StealthyFetcher 内置绕过 Cloudflare Turnstile
 - 优先复用上次成功登录后的浏览器会话
 - 会话失效时，尝试使用邮箱/密码重新登录
 - 成功后自动更新浏览器会话到 GitHub Secret
 - Telegram 通知
-
-注意:
-- 站点登录页带 Cloudflare Turnstile，自动重新登录不保证每次都能通过
-- 最稳妥的方式是让脚本持续刷新已登录会话，减少重新登录次数
 """
 
 import base64
@@ -21,24 +18,20 @@ from urllib.parse import urlparse
 
 import requests
 
-# patchright 是 playwright 的反检测分支，内置绕过 Cloudflare 能力
 try:
-    from patchright.sync_api import sync_playwright
-    _BROWSER_LIB = "patchright"
+    from scrapling.fetchers import StealthyFetcher, StealthySession
+    _ENGINE = "scrapling"
 except ImportError:
-    from playwright.sync_api import sync_playwright
-    _BROWSER_LIB = "playwright"
+    _ENGINE = "none"
+    print("⚠️ scrapling 未安装，请运行: pip install scrapling[fetchers] && scrapling install", flush=True)
 
 # ==================== 配置 ====================
 BASE_URL = os.environ.get("LUNES_BASE_URL", "https://betadash.lunes.host").rstrip("/")
 LOGIN_URL = f"{BASE_URL}/login?next=/"
-STORAGE_SECRET_NAME = os.environ.get("LUNES_STORAGE_SECRET_NAME", "LUNES_STORAGE_STATE")
+STORAGE_SECRET_NAME = os.environ.get("LUNES_STORAGE_STATE_NAME", "LUNES_STORAGE_STATE")
 PROXY_DSN = os.environ.get("LUNES_PROXY_DSN", os.environ.get("PROXY_DSN", "")).strip()
-TURNSTILE_WAIT = int(os.environ.get("LUNES_TURNSTILE_WAIT", "25"))
-POST_LOGIN_WAIT = int(os.environ.get("LUNES_POST_LOGIN_WAIT", "20"))
-CLOUDFLARE_CLICK_DELAY = int(os.environ.get("LUNES_CLOUDFLARE_CLICK_DELAY", "6"))
-CLOUDFLARE_MAX_ATTEMPTS = int(os.environ.get("LUNES_CLOUDFLARE_MAX_ATTEMPTS", "5"))
-CLOUDFLARE_FULL_PAGE_TIMEOUT = int(os.environ.get("LUNES_CLOUDFLARE_FULL_PAGE_TIMEOUT", "45"))
+TURNSTILE_WAIT = int(os.environ.get("LUNES_TURNSTILE_WAIT", "30"))
+POST_LOGIN_WAIT = int(os.environ.get("LUNES_POST_LOGIN_WAIT", "30"))
 
 
 class Telegram:
@@ -127,7 +120,7 @@ class SecretUpdater:
 
 
 class LunesKeepAlive:
-    """Lunes Host 自动保活"""
+    """Lunes Host 自动保活 — 基于 Scrapling StealthyFetcher"""
 
     def __init__(self):
         self.email = os.environ.get("LUNES_EMAIL", "").strip()
@@ -189,193 +182,29 @@ class LunesKeepAlive:
             pass
         time.sleep(2)
 
-    def get_turnstile_token(self, page):
-        token_selectors = [
-            'textarea[name="g-recaptcha-response"]',
-            'textarea[name="cf-turnstile-response"]',
-            'input[name="cf-turnstile-response"]',
-        ]
+    # ==================== Cloudflare / 页面状态检测 ====================
 
-        for selector in token_selectors:
-            try:
-                token = page.locator(selector).first.input_value(timeout=500).strip()
-                if token:
-                    return token
-            except Exception:
-                pass
-        return ""
+    def is_cloudflare_challenge(self, page):
+        """检测是否在 Cloudflare 验证页"""
+        try:
+            title = page.title()
+            if "just a moment" in title.lower():
+                return True
+        except Exception:
+            pass
 
-    def has_cloudflare_widget(self, page):
-        iframe_selectors = [
-            'iframe[src*="challenges.cloudflare.com"]',
-            'iframe[title*="Cloudflare"]',
-            'iframe[src*="turnstile"]',
-        ]
-
-        for selector in iframe_selectors:
-            try:
-                if page.locator(selector).first.is_visible(timeout=800):
-                    return True
-            except Exception:
-                pass
-        return False
-
-    def is_cloudflare_verification_page(self, page):
         text_patterns = [
             "Performing security verification",
-            "verifies you are not a bot",
             "Verify you are human",
             "Checking your browser",
             "Just a moment",
         ]
-
         try:
-            page_text = page.locator("body").inner_text(timeout=1500)
-            if any(pattern in page_text for pattern in text_patterns):
+            body = page.locator("body").inner_text(timeout=2000)
+            if any(p in body for p in text_patterns):
                 return True
         except Exception:
             pass
-
-        try:
-            title = page.title()
-            if any(pattern.lower() in title.lower() for pattern in ["Just a moment", "security verification"]):
-                return True
-        except Exception:
-            pass
-
-        return self.has_cloudflare_widget(page)
-
-    def click_cloudflare_widget(self, page):
-        page_selectors = [
-            'text="Verify you are human"',
-            'label:has-text("Verify you are human")',
-            '[role="checkbox"]',
-            'input[type="checkbox"]',
-        ]
-
-        for selector in page_selectors:
-            try:
-                el = page.locator(selector).first
-                if el.is_visible(timeout=800):
-                    el.click(force=True, timeout=2000)
-                    self.log(f"已点击页面上的 Cloudflare 控件: {selector}", "SUCCESS")
-                    return True
-            except Exception:
-                pass
-
-        frame_selectors = [
-            'label.ctp-checkbox-label',
-            'label.cb-lb',
-            'text="Verify you are human"',
-            'input[type="checkbox"]',
-            '[role="checkbox"]',
-            '.ctp-checkbox-container',
-            '.ctp-checkbox',
-        ]
-
-        for frame in page.frames:
-            if "challenges.cloudflare.com" not in frame.url and "turnstile" not in frame.url:
-                continue
-            for selector in frame_selectors:
-                try:
-                    el = frame.locator(selector).first
-                    if el.is_visible(timeout=800):
-                        el.click(force=True, timeout=2000)
-                        self.log(f"已点击 Cloudflare 验证控件: {selector}", "SUCCESS")
-                        return True
-                except Exception:
-                    pass
-
-        iframe_selectors = [
-            'iframe[src*="challenges.cloudflare.com"]',
-            'iframe[title*="Cloudflare"]',
-            'iframe[src*="turnstile"]',
-        ]
-
-        for selector in iframe_selectors:
-            try:
-                iframe = page.locator(selector).first
-                if not iframe.is_visible(timeout=800):
-                    continue
-                box = iframe.bounding_box()
-                if not box:
-                    continue
-                # Cloudflare checkbox 通常位于 iframe 左侧，不在中心区域
-                x = box["x"] + min(max(box["width"] * 0.18, 24), 42)
-                y = box["y"] + box["height"] / 2
-                page.mouse.click(x, y)
-                self.log("已点击 Cloudflare iframe 左侧验证区域", "SUCCESS")
-                return True
-            except Exception:
-                pass
-
-        return False
-
-    def wait_for_full_page_challenge(self, page, timeout=None):
-        """等待 Cloudflare 全页验证（"Just a moment..."）自动通过。
-
-        全页验证通常是 Cloudflare 的 JS Challenge 或 Managed Challenge。
-        策略：先等待自动通过，只在必要时点击一次复选框（多次点击会被判定为机器人）。
-        """
-        if timeout is None:
-            timeout = CLOUDFLARE_FULL_PAGE_TIMEOUT
-
-        # 先确认确实是全页验证
-        if not self.is_cloudflare_verification_page(page):
-            return False
-
-        self.log(f"检测到 Cloudflare 全页验证，最长等待 {timeout} 秒", "WARN")
-        self.shot(page, "full_page_challenge")
-
-        start = time.time()
-        check_interval = 2
-        clicked_once = False  # 只点击一次
-
-        while time.time() - start < timeout:
-            elapsed = int(time.time() - start)
-
-            # 检查是否已自动通过（页面已离开验证页）
-            if not self.is_cloudflare_verification_page(page):
-                self.log(f"Cloudflare 全页验证已通过（耗时 {elapsed} 秒）", "SUCCESS")
-                return True
-
-            # 检查 Turnstile token 是否已就绪
-            if self.get_turnstile_token(page):
-                self.log(f"Cloudflare Turnstile token 已就绪（耗时 {elapsed} 秒）", "SUCCESS")
-                return True
-
-            # 只点击一次复选框，10 秒后执行（给页面充足加载时间）
-            if not clicked_once and elapsed >= 10:
-                clicked = self.click_cloudflare_widget(page)
-                clicked_once = True
-                if clicked:
-                    self.log("已点击验证控件，等待验证完成...", "STEP")
-                    self.shot(page, f"challenge_clicked_{elapsed}s")
-                    # 点击后等待较长时间让验证完成
-                    time.sleep(8)
-                    if not self.is_cloudflare_verification_page(page):
-                        self.log(f"Cloudflare 验证通过（耗时 {elapsed} 秒）", "SUCCESS")
-                        return True
-                else:
-                    self.log("未找到可点击的验证控件，继续等待自动通过", "WARN")
-
-            # 模拟人类鼠标移动（辅助反检测）
-            if elapsed % 5 == 0 and elapsed > 0:
-                try:
-                    import random as _r
-                    page.mouse.move(
-                        200 + _r.randint(-100, 100),
-                        200 + _r.randint(-100, 100),
-                    )
-                except Exception:
-                    pass
-
-            if elapsed > 0 and elapsed % 10 == 0:
-                self.log(f"  全页验证等待中... ({elapsed}/{timeout}秒)")
-
-            time.sleep(check_interval)
-
-        self.log(f"Cloudflare 全页验证超时 ({timeout}秒)", "WARN")
         return False
 
     def is_login_page(self, page):
@@ -386,53 +215,58 @@ class LunesKeepAlive:
         except Exception:
             pass
 
-        selectors = [
-            'input[name="email"]',
-            'input[name="password"]',
-            'button:has-text("Continue to dashboard")',
-        ]
-        for selector in selectors:
+        for sel in ['input[name="email"]', 'input[name="password"]']:
             try:
-                if page.locator(selector).first.is_visible(timeout=1200):
+                if page.locator(sel).first.is_visible(timeout=1500):
                     return True
             except Exception:
                 pass
         return False
 
     def is_authenticated(self, page):
-        if self.is_cloudflare_verification_page(page):
+        if self.is_cloudflare_challenge(page):
             return False
         return not self.is_login_page(page)
 
+    # ==================== 核心流程 ====================
+
+    def open_page(self, page, url, label="页面", timeout=60000):
+        """打开页面并等待 Cloudflare 验证自动通过（Scrapling 处理）"""
+        self.log(f"访问 {label}: {url}", "STEP")
+        page.goto(url, timeout=timeout)
+        self.wait_page_ready(page, timeout=timeout)
+
+        if self.is_cloudflare_challenge(page):
+            self.log(f"{label} 出现 Cloudflare 验证，等待自动通过...", "WARN")
+            self.shot(page, f"{label}_cf")
+            # StealthyFetcher 已经在底层处理 Cloudflare，额外等待
+            for i in range(30):
+                if not self.is_cloudflare_challenge(page):
+                    self.log(f"Cloudflare 验证已通过", "SUCCESS")
+                    return True
+                time.sleep(1)
+                if i > 0 and i % 10 == 0:
+                    self.log(f"  验证等待中... ({i}/30秒)")
+            self.log("Cloudflare 验证等待超时", "WARN")
+            return False
+
+        return True
+
     def wait_for_login_form(self, page, retries=3):
-        """等待登录表单可交互。若未出现，则尝试处理 challenge 并刷新重试。"""
+        """等待登录表单出现"""
         for attempt in range(1, retries + 1):
-            # 先处理全页 Cloudflare 验证
-            if self.is_cloudflare_verification_page(page):
-                self.wait_for_full_page_challenge(page)
-                self.wait_page_ready(page, timeout=30000)
+            # 先处理 Cloudflare
+            if self.is_cloudflare_challenge(page):
+                self.open_page(page, page.url, f"登录表单等待({attempt})")
 
             try:
-                page.locator('input[name="email"]').first.wait_for(state="visible", timeout=10000)
-                page.locator('input[name="password"]').first.wait_for(state="visible", timeout=10000)
+                page.locator('input[name="email"]').first.wait_for(state="visible", timeout=15000)
+                page.locator('input[name="password"]').first.wait_for(state="visible", timeout=15000)
                 self.log(f"登录表单已就绪（第 {attempt} 次）", "SUCCESS")
                 return True
             except Exception:
                 self.log(f"第 {attempt} 次等待登录表单失败", "WARN")
                 self.shot(page, f"login_form_wait_{attempt}")
-
-                # 再次尝试全页验证（可能刷新后又出现）
-                if self.is_cloudflare_verification_page(page):
-                    self.wait_for_full_page_challenge(page)
-                    self.wait_page_ready(page, timeout=30000)
-                    # 全页验证通过后再试一次找表单
-                    try:
-                        page.locator('input[name="email"]').first.wait_for(state="visible", timeout=10000)
-                        page.locator('input[name="password"]').first.wait_for(state="visible", timeout=10000)
-                        self.log(f"验证通过后登录表单已就绪（第 {attempt} 次）", "SUCCESS")
-                        return True
-                    except Exception:
-                        pass
 
                 if attempt < retries:
                     try:
@@ -444,63 +278,11 @@ class LunesKeepAlive:
         self.log("多次尝试后仍未等到登录表单", "ERROR")
         return False
 
-    def wait_turnstile(self, page):
-        self.log(f"等待 Turnstile 就绪，最长 {TURNSTILE_WAIT} 秒", "STEP")
-
-        # 先处理全页验证（如果存在）
-        if self.is_cloudflare_verification_page(page):
-            self.wait_for_full_page_challenge(page)
-
-        for i in range(TURNSTILE_WAIT):
-            token = self.get_turnstile_token(page)
-            if token:
-                self.log("Turnstile 已生成 token", "SUCCESS")
-                return True
-
-            if self.is_cloudflare_verification_page(page) and i > 0 and i % 10 == 0:
-                self.wait_for_full_page_challenge(page)
-
-            time.sleep(1)
-            if i > 0 and i % 5 == 0:
-                self.log(f"  Turnstile 等待中... ({i}/{TURNSTILE_WAIT}秒)")
-
-        self.log("未检测到 Turnstile token，将继续尝试提交", "WARN")
-        return False
-
-    def open_root(self, page):
-        self.log("访问首页", "STEP")
-        page.goto(f"{BASE_URL}/", timeout=60000)
-        self.wait_page_ready(page, timeout=60000)
-
-        # 处理全页 Cloudflare 验证
-        if self.is_cloudflare_verification_page(page):
-            ok = self.wait_for_full_page_challenge(page)
-            if ok:
-                self.wait_page_ready(page, timeout=30000)
-            else:
-                self.log("首页 Cloudflare 验证未通过，将视为未登录", "WARN")
-
-        self.log(f"当前 URL: {page.url}")
-        self.shot(page, "home")
-
-    def login(self, page):
+    def fill_and_login(self, page):
+        """填写凭据并登录"""
         if not self.email or not self.password:
-            self.log("缺少 LUNES_EMAIL 或 LUNES_PASSWORD，无法重新登录", "ERROR")
+            self.log("缺少 LUNES_EMAIL 或 LUNES_PASSWORD", "ERROR")
             return False
-
-        self.log("会话失效，尝试账号密码登录", "STEP")
-        page.goto(LOGIN_URL, timeout=60000)
-        self.wait_page_ready(page, timeout=60000)
-
-        # 处理全页 Cloudflare 验证
-        if self.is_cloudflare_verification_page(page):
-            ok = self.wait_for_full_page_challenge(page)
-            if ok:
-                self.wait_page_ready(page, timeout=30000)
-            else:
-                self.log("登录页 Cloudflare 验证未通过", "WARN")
-
-        self.shot(page, "login")
 
         if not self.wait_for_login_form(page):
             return False
@@ -510,37 +292,46 @@ class LunesKeepAlive:
             password_input = page.locator('input[name="password"]').first
 
             email_input.click()
-            time.sleep(random.uniform(0.2, 0.6))
+            time.sleep(random.uniform(0.2, 0.5))
             email_input.fill("")
-            email_input.type(self.email, delay=random.randint(30, 100))
+            email_input.type(self.email, delay=random.randint(30, 80))
 
-            time.sleep(random.uniform(0.4, 0.9))
+            time.sleep(random.uniform(0.3, 0.8))
 
             password_input.click()
-            time.sleep(random.uniform(0.2, 0.6))
+            time.sleep(random.uniform(0.2, 0.5))
             password_input.fill("")
-            password_input.type(self.password, delay=random.randint(30, 100))
+            password_input.type(self.password, delay=random.randint(30, 80))
             self.log("已输入登录凭据", "SUCCESS")
         except Exception as e:
-            self.log(f"输入登录凭据失败: {e}", "ERROR")
+            self.log(f"输入凭据失败: {e}", "ERROR")
             return False
 
-        self.wait_turnstile(page)
         self.shot(page, "login_filled")
+
+        # 等待 Turnstile 自动完成（Scrapling 处理）
+        self.log(f"等待 Turnstile/提交处理，最长 {TURNSTILE_WAIT} 秒", "STEP")
+        time.sleep(3)
 
         try:
             page.locator('button[type="submit"], .submit-btn').first.click()
+            self.log("已提交登录", "SUCCESS")
         except Exception as e:
             self.log(f"提交登录失败: {e}", "ERROR")
             return False
 
+        # 等待登录完成
         deadline = time.time() + POST_LOGIN_WAIT
         while time.time() < deadline:
             self.wait_page_ready(page, timeout=5000)
-            # 处理登录后可能出现的全页验证
-            if self.is_cloudflare_verification_page(page):
-                self.wait_for_full_page_challenge(page)
+            if self.is_cloudflare_challenge(page):
+                self.log("登录后触发 Cloudflare 验证，等待通过...", "WARN")
+                for i in range(30):
+                    if not self.is_cloudflare_challenge(page):
+                        break
+                    time.sleep(1)
                 self.wait_page_ready(page, timeout=10000)
+
             if self.is_authenticated(page):
                 self.log("Lunes 登录成功", "SUCCESS")
                 self.shot(page, "login_success")
@@ -548,20 +339,11 @@ class LunesKeepAlive:
             time.sleep(1)
 
         self.shot(page, "login_failed")
-        self.log("登录后仍停留在登录页，可能是 Turnstile 未通过或凭据无效", "ERROR")
-
-        flash_selectors = [".flash-message", ".alert", '[role="alert"]']
-        for selector in flash_selectors:
-            try:
-                text = page.locator(selector).first.inner_text(timeout=1000).strip()
-                if text:
-                    self.log(f"页面提示: {text}", "WARN")
-                    break
-            except Exception:
-                pass
+        self.log("登录后仍停留在登录页", "ERROR")
         return False
 
     def keepalive(self, page):
+        """保活访问"""
         self.log("执行保活访问", "STEP")
         targets = [
             (f"{BASE_URL}/", "首页"),
@@ -578,8 +360,7 @@ class LunesKeepAlive:
                 page.goto(url, timeout=30000)
                 self.wait_page_ready(page, timeout=30000)
 
-                # 检查是否被 Cloudflare 拦截
-                if self.is_cloudflare_verification_page(page):
+                if self.is_cloudflare_challenge(page):
                     self.log(f"访问 {name} 被 Cloudflare 拦截", "WARN")
                     cf_blocked = True
                     continue
@@ -626,84 +407,119 @@ class LunesKeepAlive:
         self.log(f"站点: {BASE_URL}")
         self.log(f"账号: {self.email or '未配置'}")
         self.log(f"会话状态: {'有' if self.storage_state_b64 else '无'}")
-        self.log(f"浏览器引擎: {_BROWSER_LIB}")
+        self.log(f"引擎: {_ENGINE}")
+
+        if _ENGINE != "scrapling":
+            self.log("需要 scrapling 库！安装: pip install scrapling[fetchers] && scrapling install", "ERROR")
+            self.notify(False, "scrapling 未安装")
+            sys.exit(1)
 
         if not self.storage_state_b64 and (not self.email or not self.password):
             self.log(
-                f"缺少初始化凭据。至少需要 {STORAGE_SECRET_NAME} 或 LUNES_EMAIL/LUNES_PASSWORD",
+                f"缺少凭据。至少需要 {STORAGE_SECRET_NAME} 或 LUNES_EMAIL/LUNES_PASSWORD",
                 "ERROR",
             )
-            self.notify(False, "缺少初始化凭据")
+            self.notify(False, "缺少凭据")
             sys.exit(1)
 
-        with sync_playwright() as p:
-            launch_args = {
-                "headless": False,
-                "args": [
-                    "--no-sandbox",
-                    "--disable-gpu",
-                ],
-            }
+        # 构建 session 参数
+        session_kwargs = {
+            "headless": True,
+            "solve_cloudflare": True,
+            "network_idle": True,
+        }
 
-            if PROXY_DSN:
-                try:
-                    parsed = urlparse(PROXY_DSN)
-                    proxy_config = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
-                    if parsed.username:
-                        proxy_config["username"] = parsed.username
-                    if parsed.password:
-                        proxy_config["password"] = parsed.password
-                    launch_args["proxy"] = proxy_config
-                    self.log(f"启用代理: {proxy_config['server']}")
-                except Exception as e:
-                    self.log(f"代理配置解析失败: {e}", "WARN")
-
-            browser = p.chromium.launch(**launch_args)
-
-            context_kwargs = {
-                "viewport": {"width": 1600, "height": 900},
-                "user_agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/128.0.0.0 Safari/537.36"
-                ),
-            }
-
-            state = self.decode_storage_state()
-            if state:
-                context_kwargs["storage_state"] = state
-
-            context = browser.new_context(**context_kwargs)
-            page = context.new_page()
-
+        if PROXY_DSN:
             try:
-                self.open_root(page)
+                parsed = urlparse(PROXY_DSN)
+                session_kwargs["proxy"] = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
+                if parsed.username or parsed.password:
+                    session_kwargs["proxy"] = (
+                        f"{parsed.scheme}://{parsed.username or ''}:{parsed.password or ''}"
+                        f"@{parsed.hostname}:{parsed.port}"
+                    )
+                self.log(f"启用代理: {parsed.scheme}://{parsed.hostname}:{parsed.port}")
+            except Exception as e:
+                self.log(f"代理配置解析失败: {e}", "WARN")
 
-                if not self.is_authenticated(page):
-                    self.log("当前未登录", "WARN")
-                    if not self.login(page):
+        state = self.decode_storage_state()
+        if state:
+            # 从 storage state 提取 cookies 注入
+            cookies = state.get("cookies", [])
+            if cookies:
+                # 转换为 Scrapling/Playwright 格式
+                formatted = []
+                for c in cookies:
+                    fc = {
+                        "name": c["name"],
+                        "value": c["value"],
+                        "domain": c.get("domain", ""),
+                        "path": c.get("path", "/"),
+                    }
+                    if c.get("expires"):
+                        fc["expires"] = c["expires"]
+                    formatted.append(fc)
+                session_kwargs["cookies"] = formatted
+
+        try:
+            with StealthySession(**session_kwargs) as session:
+                page = session.fetch(f"{BASE_URL}/", google_search=False)
+                pw_page = page._page  # 获取底层 Playwright page 对象
+
+                self.log(f"当前 URL: {pw_page.url}")
+
+                # 处理 Cloudflare
+                if self.is_cloudflare_challenge(pw_page):
+                    self.log("首页 Cloudflare 验证中，等待通过...", "WARN")
+                    for i in range(30):
+                        if not self.is_cloudflare_challenge(pw_page):
+                            self.log("Cloudflare 验证已通过", "SUCCESS")
+                            break
+                        time.sleep(1)
+                        if i > 0 and i % 10 == 0:
+                            self.log(f"  验证等待中... ({i}/30秒)")
+                    else:
+                        self.log("首页 Cloudflare 验证超时", "WARN")
+
+                self.shot(pw_page, "home")
+
+                if not self.is_authenticated(pw_page):
+                    self.log("当前未登录，尝试账号密码登录", "WARN")
+                    # 导航到登录页
+                    pw_page.goto(LOGIN_URL, timeout=60000)
+                    self.wait_page_ready(pw_page, timeout=60000)
+
+                    # 处理 Cloudflare
+                    if self.is_cloudflare_challenge(pw_page):
+                        self.log("登录页 Cloudflare 验证中...", "WARN")
+                        for i in range(30):
+                            if not self.is_cloudflare_challenge(pw_page):
+                                break
+                            time.sleep(1)
+
+                    if not self.fill_and_login(pw_page):
                         self.notify(False, "Lunes 登录失败")
-                        sys.exit(1)
-                elif self.is_cloudflare_verification_page(page):
-                    self.log("首页仍在 Cloudflare 验证页，尝试登录", "WARN")
-                    if not self.login(page):
-                        self.notify(False, "Lunes 登录失败（Cloudflare 拦截）")
                         sys.exit(1)
                 else:
                     self.log("已通过历史会话登录", "SUCCESS")
 
-                self.keepalive(page)
-                self.save_storage_state(context)
+                self.keepalive(pw_page)
+
+                # 保存会话
+                try:
+                    context = pw_page.context
+                    self.save_storage_state(context)
+                except Exception as e:
+                    self.log(f"保存会话状态失败: {e}", "WARN")
+
                 self.notify(True)
                 print("\n✅ 成功！\n", flush=True)
-            except Exception as e:
-                self.log(f"异常: {e}", "ERROR")
-                self.shot(page, "exception")
-                traceback.print_exc()
-                self.notify(False, str(e))
-                sys.exit(1)
-            finally:
-                browser.close()
+
+        except Exception as e:
+            self.log(f"异常: {e}", "ERROR")
+            traceback.print_exc()
+            self.notify(False, str(e))
+            sys.exit(1)
 
 
 if __name__ == "__main__":

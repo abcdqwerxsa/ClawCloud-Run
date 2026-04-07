@@ -26,10 +26,8 @@ jobs:
 
       - name: 安装依赖
         run: |
-          sudo apt-get update && sudo apt-get install -y xvfb
-          pip install patchright requests pynacl
-          patchright install chromium
-          patchright install-deps
+          pip install "scrapling[fetchers]" requests pynacl
+          scrapling install
 
       - name: 运行 Lunes 保活
         env:
@@ -40,8 +38,4 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
           PYTHONUNBUFFERED: "1"
-          DISPLAY: ":99"
-        run: |
-          Xvfb :99 -screen 0 1920x1080x24 &
-          sleep 2
-          python -u scripts/lunes_keepalive.py
+        run: python -u scripts/lunes_keepalive.py

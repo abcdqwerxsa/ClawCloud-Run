@@ -397,11 +397,21 @@ class LunesKeepAlive:
 
         # 检查是否有 Turnstile 验证码
         if self.is_cf_challenge(page):
-            self.log("登录表单包含 Cloudflare Turnstile，等待解决")
+            self.log("登录表单包含 Cloudflare Turnstile，尝试点击验证")
+            self.shot(page, "turnstile_before_click")
+
+            # 立即点击复选框
+            if self._click_cf_checkbox(page):
+                self.log("已点击 Turnstile 复选框，等待验证通过")
+                time.sleep(3)
+
+            # 等待验证通过
             if not self.wait_cf_clear(page, timeout=60):
                 self.log("Turnstile 验证超时", "ERROR")
                 self.shot(page, "turnstile_timeout")
                 return False
+
+            self.shot(page, "turnstile_passed")
 
         # 提交
         try:

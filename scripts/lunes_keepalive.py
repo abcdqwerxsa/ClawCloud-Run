@@ -212,10 +212,53 @@ class LunesKeepAlive:
                 pass
         return False
 
+    def is_cloudflare_verification_page(self, page):
+        text_patterns = [
+            "Performing security verification",
+            "verifies you are not a bot",
+            "Verify you are human",
+            "Checking your browser",
+            "Just a moment",
+        ]
+
+        try:
+            page_text = page.locator("body").inner_text(timeout=1500)
+            if any(pattern in page_text for pattern in text_patterns):
+                return True
+        except Exception:
+            pass
+
+        try:
+            title = page.title()
+            if any(pattern.lower() in title.lower() for pattern in ["Just a moment", "security verification"]):
+                return True
+        except Exception:
+            pass
+
+        return self.has_cloudflare_widget(page)
+
     def click_cloudflare_widget(self, page):
+        page_selectors = [
+            'text="Verify you are human"',
+            'label:has-text("Verify you are human")',
+            '[role="checkbox"]',
+            'input[type="checkbox"]',
+        ]
+
+        for selector in page_selectors:
+            try:
+                el = page.locator(selector).first
+                if el.is_visible(timeout=800):
+                    el.click(force=True, timeout=2000)
+                    self.log(f"已点击页面上的 Cloudflare 控件: {selector}", "SUCCESS")
+                    return True
+            except Exception:
+                pass
+
         frame_selectors = [
             'label.ctp-checkbox-label',
             'label.cb-lb',
+            'text="Verify you are human"',
             'input[type="checkbox"]',
             '[role="checkbox"]',
             '.ctp-checkbox-container',
@@ -249,10 +292,11 @@ class LunesKeepAlive:
                 box = iframe.bounding_box()
                 if not box:
                     continue
-                x = box["x"] + box["width"] / 2
+                # Cloudflare checkbox 通常位于 iframe 左侧，不在中心区域
+                x = box["x"] + min(max(box["width"] * 0.18, 24), 42)
                 y = box["y"] + box["height"] / 2
                 page.mouse.click(x, y)
-                self.log("已点击 Cloudflare iframe 中心点", "SUCCESS")
+                self.log("已点击 Cloudflare iframe 左侧验证区域", "SUCCESS")
                 return True
             except Exception:
                 pass
@@ -264,15 +308,20 @@ class LunesKeepAlive:
             self.log("Turnstile token 已就绪", "SUCCESS")
             return True
 
-        if not self.has_cloudflare_widget(page):
+        if not self.is_cloudflare_verification_page(page):
             return False
 
         self.log(f"{stage}: 检测到 Cloudflare 验证，先等待 {CLOUDFLARE_CLICK_DELAY} 秒", "WARN")
+        self.shot(page, "cloudflare_detected")
         time.sleep(CLOUDFLARE_CLICK_DELAY)
 
         for attempt in range(1, CLOUDFLARE_MAX_ATTEMPTS + 1):
             if self.get_turnstile_token(page):
                 self.log("Cloudflare 验证已通过", "SUCCESS")
+                return True
+
+            if not self.is_cloudflare_verification_page(page):
+                self.log("Cloudflare 验证页已离开", "SUCCESS")
                 return True
 
             clicked = self.click_cloudflare_widget(page)
@@ -281,13 +330,26 @@ class LunesKeepAlive:
             else:
                 self.shot(page, f"cloudflare_clicked_{attempt}")
 
-            time.sleep(4)
+            for _ in range(8):
+                time.sleep(1)
+                if self.get_turnstile_token(page):
+                    self.log("Cloudflare 验证已通过", "SUCCESS")
+                    return True
+                if not self.is_cloudflare_verification_page(page):
+                    self.log("Cloudflare 验证页已离开", "SUCCESS")
+                    return True
+
             if self.get_turnstile_token(page):
                 self.log("Cloudflare 验证已通过", "SUCCESS")
                 return True
 
             try:
                 page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+            try:
+                page.mouse.move(200, 200)
             except Exception:
                 pass
 
@@ -355,7 +417,7 @@ class LunesKeepAlive:
                 self.log("Turnstile 已生成 token", "SUCCESS")
                 return True
 
-            if self.has_cloudflare_widget(page) and i > 0 and i % 6 == 0:
+            if self.is_cloudflare_verification_page(page) and i > 0 and i % 6 == 0:
                 self.handle_cloudflare_challenge(page, f"等待 Turnstile 第 {i} 秒")
 
             time.sleep(1)

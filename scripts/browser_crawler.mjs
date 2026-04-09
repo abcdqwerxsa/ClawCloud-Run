@@ -46,6 +46,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withTimeout(promise, timeoutMs, label) {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return promise;
+  }
+
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs),
+    ),
+  ]);
+}
+
 function toAbsoluteUrl(url, baseUrl) {
   if (!url) {
     return "";
@@ -317,11 +330,32 @@ function startLightpanda({ binary, host, port }) {
   return child;
 }
 
-async function crawlTarget(wsEndpoint, target) {
-  if ((target.engine || "puppeteer") === "playwright") {
-    return withPlaywright(wsEndpoint, target);
+async function stopLightpanda(child) {
+  if (!child || child.killed) {
+    return;
   }
-  return withPuppeteer(wsEndpoint, target);
+
+  const closed = new Promise((resolve) => {
+    child.once("close", resolve);
+    child.once("exit", resolve);
+  });
+
+  child.kill("SIGTERM");
+  const timeout = sleep(5_000).then(() => {
+    if (!child.killed) {
+      child.kill("SIGKILL");
+    }
+  });
+
+  await Promise.race([closed, timeout]);
+}
+
+async function crawlTarget(wsEndpoint, target) {
+  const run =
+    (target.engine || "puppeteer") === "playwright"
+      ? withPlaywright(wsEndpoint, target)
+      : withPuppeteer(wsEndpoint, target);
+  return withTimeout(run, target.totalTimeoutMs || 90_000, target.name || "crawler target");
 }
 
 async function main() {
@@ -344,25 +378,43 @@ async function main() {
   try {
     wsEndpoint = process.env.LIGHTPANDA_WS_ENDPOINT || (await waitForBrowser(args));
     const allItems = [];
+    const statuses = [];
     for (const target of targets) {
-      const items = await crawlTarget(wsEndpoint, target);
-      allItems.push(...items);
+      try {
+        const items = await crawlTarget(wsEndpoint, target);
+        allItems.push(...items);
+        statuses.push({
+          target: target.name,
+          status: "ok",
+          count: items.length,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        statuses.push({
+          target: target.name,
+          status: "error",
+          error: message,
+        });
+        console.error(`[crawler-target-error] ${target.name}: ${message}`);
+      }
     }
 
-    const output = JSON.stringify(allItems, null, 2);
+    const output = JSON.stringify({ items: allItems, statuses }, null, 2);
     if (args.output) {
       fs.writeFileSync(args.output, `${output}\n`);
     } else {
       process.stdout.write(`${output}\n`);
     }
   } finally {
-    if (child && !child.killed) {
-      child.kill("SIGTERM");
-    }
+    await stopLightpanda(child);
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.stack || error.message : String(error));
-  process.exit(1);
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+    process.exit(1);
+  });

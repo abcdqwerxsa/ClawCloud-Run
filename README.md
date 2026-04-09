@@ -81,6 +81,7 @@
 - 默认配置文件：[`config/browser_targets.json`](./config/browser_targets.json)
 - 示例配置文件：[`config/browser_targets.example.json`](./config/browser_targets.example.json)
 - 仓库已经预置一组 starter targets：`Bun`、`Deno`、`Cloudflare`、`Vercel`、`Railway`、`Fly.io`、`Render`、`Hugging Face`
+- 默认只启用当前验证较稳定的 `Bun / Deno / Cloudflare`；其余目标保留在配置里，但默认 `enabled: false`，需要你逐站开启和微调
 - 每个 target 支持：
   - `engine`: `puppeteer` 或 `playwright`
   - `steps`: 打开页面、等待元素、点击、输入、滚动、执行页面内脚本

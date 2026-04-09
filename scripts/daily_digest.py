@@ -347,8 +347,19 @@ class BrowserCrawlerAdapter(SourceAdapter):
                 timeout=self.timeout_seconds,
             )
             payload = json.loads(output_path.read_text(encoding="utf-8"))
-            items = [digest_item_from_payload(entry) for entry in payload]
+            raw_items = payload.get("items", payload) if isinstance(payload, dict) else payload
+            statuses = payload.get("statuses", []) if isinstance(payload, dict) else []
+            items = [digest_item_from_payload(entry) for entry in raw_items]
             items = [item for item in items if item]
+            for status in statuses:
+                target = normalize_inline_text(str(status.get("target") or "unknown target"))
+                state = normalize_inline_text(str(status.get("status") or "unknown"))
+                if state == "ok":
+                    count = int(status.get("count") or 0)
+                    self.logger.source_status(f"Browser:{target}", f"ok ({count} items)")
+                else:
+                    error = trim_sentence(normalize_inline_text(str(status.get("error") or "unknown error")), 180)
+                    self.logger.source_status(f"Browser:{target}", f"error: {error}")
             self.logger.source_status("Browser Crawler", f"ok ({len(items)} items)")
             if result.stderr.strip():
                 self.logger.log(f"Browser crawler stderr: {trim_sentence(result.stderr.strip(), 240)}", "INFO")

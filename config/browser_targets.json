@@ -2,6 +2,7 @@
   "targets": [
     {
       "name": "Bun Blog",
+      "enabled": true,
       "engine": "puppeteer",
       "url": "https://bun.sh/blog",
       "category_hint": "framework",
@@ -27,6 +28,7 @@
     },
     {
       "name": "Deno Blog",
+      "enabled": true,
       "engine": "playwright",
       "url": "https://deno.com/blog",
       "category_hint": "framework",
@@ -52,6 +54,7 @@
     },
     {
       "name": "Cloudflare Blog",
+      "enabled": true,
       "engine": "playwright",
       "url": "https://blog.cloudflare.com/",
       "category_hint": "cloud",
@@ -77,6 +80,7 @@
     },
     {
       "name": "Vercel Changelog",
+      "enabled": false,
       "engine": "puppeteer",
       "url": "https://vercel.com/changelog",
       "category_hint": "free-platform",
@@ -102,6 +106,7 @@
     },
     {
       "name": "Railway Blog",
+      "enabled": false,
       "engine": "puppeteer",
       "url": "https://blog.railway.com/",
       "category_hint": "free-platform",
@@ -127,6 +132,7 @@
     },
     {
       "name": "Fly.io Blog",
+      "enabled": false,
       "engine": "playwright",
       "url": "https://fly.io/blog/",
       "category_hint": "free-platform",
@@ -152,6 +158,7 @@
     },
     {
       "name": "Render Changelog",
+      "enabled": false,
       "engine": "puppeteer",
       "url": "https://render.com/changelog",
       "category_hint": "free-platform",
@@ -177,6 +184,7 @@
     },
     {
       "name": "Hugging Face Blog",
+      "enabled": false,
       "engine": "playwright",
       "url": "https://huggingface.co/blog",
       "category_hint": "ai",

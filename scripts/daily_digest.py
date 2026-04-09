@@ -307,11 +307,25 @@ class AISummarizer:
     def can_use(self) -> bool:
         return self.enabled and bool(self.base_url and self.api_key and self.model)
 
+    def missing_fields(self) -> list[str]:
+        missing: list[str] = []
+        if not self.base_url:
+            missing.append("AI_BASE_URL")
+        if not self.api_key:
+            missing.append("AI_API_KEY")
+        if not self.model:
+            missing.append("AI_MODEL")
+        return missing
+
     def summarize(self, items: list[DigestItem], generated_at: datetime) -> bool:
         if not items:
             return False
         if not self.can_use():
-            self.logger.log("未配置 AI 摘要接口，改用规则摘要", "WARN")
+            if not self.enabled:
+                self.logger.log("AI_ENABLED=false，已禁用 AI 摘要，改用规则摘要", "WARN")
+            else:
+                missing = ", ".join(self.missing_fields()) or "unknown"
+                self.logger.log(f"AI 摘要配置不完整，缺少: {missing}，改用规则摘要", "WARN")
             fallback_summaries(items)
             return False
 

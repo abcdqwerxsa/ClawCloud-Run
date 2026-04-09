@@ -59,6 +59,11 @@
 
 `Daily Tech Digest` 默认每天北京时间 `09:00` 执行，对应 workflow: [`.github/workflows/daily-tech-digest.yml`](./.github/workflows/daily-tech-digest.yml)。
 
+说明：
+- `AI_ENABLED` 不手动配置也可以，默认按 `true` 处理。
+- `AI_BASE_URL` 和 `AI_MODEL` 优先读 `Variables`，也兼容放在 `Secrets`。
+- `AI_API_KEY` 默认从 `Secrets` 读取。
+
 ### Daily Tech Digest 输出内容
 
 - 默认抓取稳定源：`arXiv RSS`、`Hacker News`、`GitHub Trending`、以及你额外配置的官方 RSS/Atom。

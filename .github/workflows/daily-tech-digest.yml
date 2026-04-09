@@ -56,11 +56,11 @@ jobs:
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          AI_ENABLED: ${{ vars.AI_ENABLED }}
-          AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+          AI_ENABLED: ${{ vars.AI_ENABLED || 'true' }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL || secrets.AI_BASE_URL }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
-          AI_MODEL: ${{ vars.AI_MODEL }}
-          AI_TIMEOUT_SECONDS: ${{ vars.AI_TIMEOUT_SECONDS }}
+          AI_MODEL: ${{ vars.AI_MODEL || secrets.AI_MODEL }}
+          AI_TIMEOUT_SECONDS: ${{ vars.AI_TIMEOUT_SECONDS || '60' }}
           DIGEST_ARXIV_FEEDS: ${{ vars.DIGEST_ARXIV_FEEDS }}
           DIGEST_OFFICIAL_FEEDS: ${{ vars.DIGEST_OFFICIAL_FEEDS }}
           DIGEST_MAX_ITEMS: ${{ vars.DIGEST_MAX_ITEMS }}

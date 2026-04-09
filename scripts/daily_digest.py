@@ -1,0 +1,1077 @@
+"""
+Daily tech digest collector for AI, cloud native, frameworks, and free platforms.
+
+Features:
+- Collects from stable sources: arXiv RSS, Hacker News front page, GitHub Trending,
+  and optional configurable RSS/Atom feeds.
+- Filters and ranks items for relevance to AI infra, cloud native tooling,
+  frameworks, and free deployment platforms.
+- Uses an OpenAI-compatible endpoint for concise summaries when configured.
+- Generates a Markdown digest and optionally delivers it through Telegram
+  as a short summary message plus the full Markdown file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import textwrap
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from html import unescape
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+from xml.etree import ElementTree as ET
+
+import requests
+from bs4 import BeautifulSoup
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
+
+
+CATEGORY_LABELS = {
+    "ai": "AI",
+    "cloud": "云原生",
+    "framework": "框架",
+    "free-platform": "免费平台",
+}
+CATEGORY_ORDER = ["ai", "cloud", "framework", "free-platform"]
+DEFAULT_ARXIV_FEEDS = [
+    {"url": "https://export.arxiv.org/rss/cs.AI", "source": "arXiv cs.AI", "category": "ai"},
+    {"url": "https://export.arxiv.org/rss/cs.LG", "source": "arXiv cs.LG", "category": "ai"},
+    {"url": "https://export.arxiv.org/rss/cs.DC", "source": "arXiv cs.DC", "category": "cloud"},
+]
+PROGRESS_KEYWORDS = {
+    "release",
+    "launched",
+    "launch",
+    "announces",
+    "announced",
+    "beta",
+    "ga",
+    "generally available",
+    "pricing",
+    "free plan",
+    "free tier",
+    "available",
+    "update",
+    "v1",
+    "2.0",
+}
+
+
+@dataclass
+class DigestItem:
+    source: str
+    title: str
+    url: str
+    published_at: str = ""
+    raw_summary: str = ""
+    category_hint: str = ""
+    signals: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    category: str = ""
+    score: float = 0.0
+    summary: str = ""
+    reason: str = ""
+    tags: list[str] = field(default_factory=list)
+
+    @property
+    def normalized_title(self) -> str:
+        return normalize_text(self.title)
+
+
+class Telegram:
+    def __init__(self, logger: "Logger", dry_run: bool = False):
+        self.logger = logger
+        self.token = os.environ.get("TG_BOT_TOKEN", "").strip()
+        self.chat_id = os.environ.get("TG_CHAT_ID", "").strip()
+        self.ok = bool(self.token and self.chat_id) and not dry_run
+
+    def send(self, message: str) -> bool:
+        if not self.ok:
+            return False
+        try:
+            response = requests.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                data={"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"},
+                timeout=30,
+            )
+            return response.status_code == 200
+        except Exception as exc:  # pragma: no cover
+            self.logger.log(f"Telegram sendMessage failed: {exc}", "WARN")
+            return False
+
+    def document(self, path: Path, caption: str = "") -> bool:
+        if not self.ok or not path.exists():
+            return False
+        try:
+            with path.open("rb") as handle:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.token}/sendDocument",
+                    data={"chat_id": self.chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
+                    files={"document": (path.name, handle, "text/markdown")},
+                    timeout=60,
+                )
+            return response.status_code == 200
+        except Exception as exc:  # pragma: no cover
+            self.logger.log(f"Telegram sendDocument failed: {exc}", "WARN")
+            return False
+
+
+class Logger:
+    def __init__(self):
+        self.logs: list[str] = []
+        self.source_statuses: list[tuple[str, str]] = []
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        icons = {
+            "INFO": "ℹ️",
+            "SUCCESS": "✅",
+            "WARN": "⚠️",
+            "ERROR": "❌",
+            "STEP": "🔹",
+        }
+        line = f"{icons.get(level, '•')} {message}"
+        self.logs.append(line)
+        print(line, flush=True)
+
+    def source_status(self, source: str, status: str) -> None:
+        self.source_statuses.append((source, status))
+
+
+class SourceAdapter:
+    name = "source"
+
+    def __init__(self, session: requests.Session, logger: Logger):
+        self.session = session
+        self.logger = logger
+
+    def fetch(self) -> list[DigestItem]:
+        raise NotImplementedError
+
+
+class ArxivAdapter(SourceAdapter):
+    name = "arxiv"
+
+    def __init__(self, session: requests.Session, logger: Logger, feeds: list[dict[str, str]], per_feed_limit: int = 8):
+        super().__init__(session, logger)
+        self.feeds = feeds
+        self.per_feed_limit = per_feed_limit
+
+    def fetch(self) -> list[DigestItem]:
+        items: list[DigestItem] = []
+        for feed in self.feeds:
+            url = feed["url"]
+            source_name = feed.get("source") or host_label(url)
+            try:
+                response = self.session.get(url, timeout=30)
+                response.raise_for_status()
+                parsed = parse_rss_items(response.text, source_name, feed.get("category", ""))
+                items.extend(parsed[: self.per_feed_limit])
+                self.logger.source_status(source_name, f"ok ({len(parsed[: self.per_feed_limit])} items)")
+            except Exception as exc:
+                self.logger.source_status(source_name, f"error: {exc}")
+                self.logger.log(f"{source_name} fetch failed: {exc}", "WARN")
+        return items
+
+
+class HackerNewsAdapter(SourceAdapter):
+    name = "hackernews"
+
+    ENDPOINT = "https://hn.algolia.com/api/v1/search?tags=front_page"
+
+    def fetch(self) -> list[DigestItem]:
+        try:
+            response = self.session.get(self.ENDPOINT, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            self.logger.source_status("Hacker News", f"error: {exc}")
+            self.logger.log(f"Hacker News fetch failed: {exc}", "WARN")
+            return []
+
+        hits = data.get("hits") or []
+        items: list[DigestItem] = []
+        for hit in hits[:30]:
+            title = (hit.get("title") or hit.get("story_title") or "").strip()
+            if not title:
+                continue
+            url = (hit.get("url") or hit.get("story_url") or "").strip()
+            object_id = hit.get("objectID")
+            if not url and object_id:
+                url = f"https://news.ycombinator.com/item?id={object_id}"
+            metadata = {
+                "points": hit.get("points") or 0,
+                "comments": hit.get("num_comments") or 0,
+                "author": hit.get("author") or "",
+            }
+            summary = " ".join(
+                part
+                for part in [
+                    strip_html(hit.get("story_text") or ""),
+                    f"HN points: {metadata['points']}" if metadata["points"] else "",
+                    f"comments: {metadata['comments']}" if metadata["comments"] else "",
+                ]
+                if part
+            )
+            items.append(
+                DigestItem(
+                    source="Hacker News",
+                    title=title,
+                    url=url,
+                    published_at=normalize_datetime(hit.get("created_at") or ""),
+                    raw_summary=summary,
+                    signals=[
+                        f"HN {metadata['points']} points" if metadata["points"] else "",
+                        f"{metadata['comments']} comments" if metadata["comments"] else "",
+                    ],
+                    metadata=metadata,
+                )
+            )
+        self.logger.source_status("Hacker News", f"ok ({len(items)} items)")
+        return items
+
+
+class GitHubTrendingAdapter(SourceAdapter):
+    name = "github-trending"
+
+    URL = "https://github.com/trending?since=daily"
+
+    def fetch(self) -> list[DigestItem]:
+        try:
+            response = self.session.get(self.URL, timeout=30)
+            response.raise_for_status()
+            items = parse_github_trending(response.text)
+            self.logger.source_status("GitHub Trending", f"ok ({len(items)} items)")
+            return items
+        except Exception as exc:
+            self.logger.source_status("GitHub Trending", f"error: {exc}")
+            self.logger.log(f"GitHub Trending fetch failed: {exc}", "WARN")
+            return []
+
+
+class OfficialFeedAdapter(SourceAdapter):
+    name = "official-feeds"
+
+    def __init__(self, session: requests.Session, logger: Logger, feeds: list[dict[str, str]], per_feed_limit: int = 6):
+        super().__init__(session, logger)
+        self.feeds = feeds
+        self.per_feed_limit = per_feed_limit
+
+    def fetch(self) -> list[DigestItem]:
+        items: list[DigestItem] = []
+        for feed in self.feeds:
+            url = feed.get("url", "").strip()
+            if not url:
+                continue
+            source_name = feed.get("source") or host_label(url)
+            category = feed.get("category", "")
+            try:
+                response = self.session.get(url, timeout=30)
+                response.raise_for_status()
+                parsed = parse_rss_items(response.text, source_name, category)
+                items.extend(parsed[: self.per_feed_limit])
+                self.logger.source_status(source_name, f"ok ({len(parsed[: self.per_feed_limit])} items)")
+            except Exception as exc:
+                self.logger.source_status(source_name, f"error: {exc}")
+                self.logger.log(f"{source_name} feed fetch failed: {exc}", "WARN")
+        return items
+
+
+class XAdapter(SourceAdapter):
+    name = "x"
+
+    def fetch(self) -> list[DigestItem]:
+        self.logger.source_status("X Adapter", "skipped (reserved for future external crawler input)")
+        return []
+
+
+class AISummarizer:
+    def __init__(self, logger: Logger):
+        self.logger = logger
+        self.enabled = parse_bool(os.environ.get("AI_ENABLED", "") or "true")
+        self.base_url = os.environ.get("AI_BASE_URL", "").strip()
+        self.api_key = os.environ.get("AI_API_KEY", "").strip()
+        self.model = os.environ.get("AI_MODEL", "").strip()
+        self.timeout = env_int("AI_TIMEOUT_SECONDS", 60)
+
+    def can_use(self) -> bool:
+        return self.enabled and bool(self.base_url and self.api_key and self.model)
+
+    def summarize(self, items: list[DigestItem], generated_at: datetime) -> bool:
+        if not items:
+            return False
+        if not self.can_use():
+            self.logger.log("AI summarizer unavailable, using fallback summaries", "WARN")
+            fallback_summaries(items)
+            return False
+
+        payload_items = [
+            {
+                "url": item.url,
+                "title": item.title,
+                "source": item.source,
+                "category": CATEGORY_LABELS.get(item.category, item.category or "未分类"),
+                "published_at": item.published_at,
+                "raw_summary": item.raw_summary[:1200],
+                "signals": [signal for signal in item.signals if signal],
+            }
+            for item in items
+        ]
+        system_prompt = textwrap.dedent(
+            """
+            You are a technical intelligence analyst for a founder/operator.
+            Summarize only the concrete signal. Focus on:
+            - AI models, infra, and tooling
+            - cloud native tooling and platform shifts
+            - developer frameworks and runtimes
+            - free deployment platforms, new free tiers, or product launches relevant to deployment
+
+            Return strict JSON:
+            {
+              "items": [
+                {
+                  "url": "https://...",
+                  "summary": "1-2 short sentences",
+                  "reason": "why this matters in one sentence",
+                  "tags": ["tag1", "tag2", "tag3"]
+                }
+              ]
+            }
+            """
+        ).strip()
+        user_prompt = json.dumps(
+            {
+                "date": generated_at.strftime("%Y-%m-%d"),
+                "items": payload_items,
+            },
+            ensure_ascii=False,
+        )
+        request_payload = {
+            "model": self.model,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        try:
+            data = self._request_summary(request_payload)
+            content = (
+                (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
+            )
+            parsed = extract_json(content)
+            by_url = {entry.get("url"): entry for entry in parsed.get("items", []) if entry.get("url")}
+            if not by_url:
+                raise ValueError("empty AI summary payload")
+            for item in items:
+                entry = by_url.get(item.url)
+                if not entry:
+                    continue
+                item.summary = normalize_inline_text(entry.get("summary") or "")
+                item.reason = normalize_inline_text(entry.get("reason") or "")
+                item.tags = sanitize_tags(entry.get("tags") or [])
+            for item in items:
+                if not item.summary:
+                    hydrate_fallback(item)
+            self.logger.log(f"AI summaries generated with model {self.model}", "SUCCESS")
+            return True
+        except Exception as exc:
+            self.logger.log(f"AI summarization failed: {exc}", "WARN")
+            fallback_summaries(items)
+            return False
+
+    def _request_summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        url = build_api_url(self.base_url, "/chat/completions")
+
+        first_payload = dict(payload)
+        first_payload["response_format"] = {"type": "json_object"}
+        response = requests.post(url, headers=headers, json=first_payload, timeout=self.timeout)
+        if response.status_code < 400:
+            return response.json()
+
+        self.logger.log(
+            f"AI endpoint rejected response_format ({response.status_code}), retrying without it",
+            "WARN",
+        )
+        response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+        response.raise_for_status()
+        return response.json()
+
+
+class DigestRunner:
+    def __init__(self, dry_run: bool = False, no_telegram: bool = False):
+        self.dry_run = dry_run
+        self.logger = Logger()
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "Mozilla/5.0 ClawCloudDigest/1.0"})
+        self.max_items = env_int("DIGEST_MAX_ITEMS", 12)
+        self.dedupe_days = env_int("DIGEST_DEDUPE_DAYS", 7)
+        self.reports_dir = Path(os.environ.get("DIGEST_REPORTS_DIR", ".reports")).resolve()
+        self.output_root = Path(os.environ.get("DIGEST_OUTPUT_ROOT", "reports/digests"))
+        self.telegram = Telegram(self.logger, dry_run=dry_run or no_telegram)
+        self.summarizer = AISummarizer(self.logger)
+        self.timezone = ZoneInfo("Asia/Shanghai") if ZoneInfo else timezone(timedelta(hours=8))
+        self.generated_at = datetime.now(timezone.utc).astimezone(self.timezone)
+
+    def run(self) -> int:
+        self.logger.log("Collecting source items", "STEP")
+        items = self.collect_items()
+        self.logger.log(f"Collected {len(items)} raw items", "INFO")
+
+        history = load_history_index(self.reports_dir, self.output_root, self.dedupe_days)
+        selected = self.filter_and_rank(items, history)
+        self.logger.log(f"Selected {len(selected)} digest items after ranking", "INFO")
+
+        ai_used = self.summarizer.summarize(selected, self.generated_at)
+        markdown = render_markdown(
+            items=selected,
+            generated_at=self.generated_at,
+            source_statuses=self.logger.source_statuses,
+            ai_model=self.summarizer.model if ai_used else "",
+            dedupe_days=self.dedupe_days,
+        )
+        output_path = self.write_output(markdown)
+        self.logger.log(f"Digest written to {output_path}", "SUCCESS")
+
+        if selected:
+            self.send_notifications(selected, output_path, ai_used)
+        else:
+            self.logger.log("No selected items; skipping Telegram send", "WARN")
+        return 0
+
+    def collect_items(self) -> list[DigestItem]:
+        official_feeds = parse_feed_config(os.environ.get("DIGEST_OFFICIAL_FEEDS", ""))
+        adapters: list[SourceAdapter] = [
+            ArxivAdapter(self.session, self.logger, parse_feed_config(os.environ.get("DIGEST_ARXIV_FEEDS", ""), DEFAULT_ARXIV_FEEDS)),
+            HackerNewsAdapter(self.session, self.logger),
+            GitHubTrendingAdapter(self.session, self.logger),
+            OfficialFeedAdapter(self.session, self.logger, official_feeds),
+            XAdapter(self.session, self.logger),
+        ]
+        items: list[DigestItem] = []
+        for adapter in adapters:
+            items.extend(adapter.fetch())
+        return items
+
+    def filter_and_rank(self, items: list[DigestItem], history: dict[str, set[str]]) -> list[DigestItem]:
+        ranked: list[DigestItem] = []
+        for item in items:
+            item.category = classify_category(item)
+            item.score = score_item(item)
+            if not item.category or item.score < 4:
+                continue
+            if is_recent_duplicate(item, history):
+                continue
+            ranked.append(item)
+        ranked.sort(key=lambda entry: (entry.score, entry.published_at or ""), reverse=True)
+        return select_digest_items(ranked, self.max_items)
+
+    def write_output(self, markdown: str) -> Path:
+        target = self.report_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8")
+        return target
+
+    def report_path(self) -> Path:
+        subpath = self.output_root / self.generated_at.strftime("%Y/%m/%d.md")
+        return self.reports_dir / subpath
+
+    def send_notifications(self, items: list[DigestItem], markdown_path: Path, ai_used: bool) -> None:
+        summary = build_telegram_summary(items, self.generated_at, ai_used)
+        sent_text = self.telegram.send(summary)
+        sent_file = self.telegram.document(
+            markdown_path,
+            caption=f"Daily Tech Digest {self.generated_at.strftime('%Y-%m-%d')}",
+        )
+        if sent_text or sent_file:
+            self.logger.log("Telegram notification delivered", "SUCCESS")
+        elif self.telegram.ok:
+            self.logger.log("Telegram delivery failed", "WARN")
+
+
+def parse_bool(value: str) -> bool:
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def host_label(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or url).replace("www.", "")
+    except Exception:
+        return url
+
+
+def strip_html(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", text)
+    return normalize_inline_text(unescape(text))
+
+
+def normalize_text(text: str) -> str:
+    text = normalize_inline_text(text).lower()
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_inline_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def normalize_datetime(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        if value.endswith("Z"):
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+        return datetime.fromisoformat(value).astimezone(timezone.utc).isoformat()
+    except Exception:
+        pass
+    try:
+        return parsedate_to_datetime(value).astimezone(timezone.utc).isoformat()
+    except Exception:
+        return value
+
+
+def parse_feed_config(raw: str, default: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
+    if not raw.strip():
+        return list(default or [])
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [coerce_feed_entry(entry) for entry in parsed if coerce_feed_entry(entry)]
+    except json.JSONDecodeError:
+        pass
+
+    entries: list[dict[str, str]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        entries.append({"url": line})
+    return entries
+
+
+def coerce_feed_entry(entry: Any) -> dict[str, str] | None:
+    if isinstance(entry, str):
+        return {"url": entry}
+    if isinstance(entry, dict) and entry.get("url"):
+        return {
+            "url": str(entry.get("url", "")).strip(),
+            "source": str(entry.get("source", "")).strip(),
+            "category": str(entry.get("category", "")).strip(),
+        }
+    return None
+
+
+def parse_rss_items(xml_text: str, source_name: str, category_hint: str = "") -> list[DigestItem]:
+    root = ET.fromstring(xml_text)
+    items: list[DigestItem] = []
+    namespaces = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "dc": "http://purl.org/dc/elements/1.1/",
+    }
+
+    channel_items = root.findall(".//item")
+    if channel_items:
+        for node in channel_items:
+            title = normalize_inline_text(node.findtext("title", ""))
+            link = normalize_inline_text(node.findtext("link", ""))
+            summary = strip_html(node.findtext("description", ""))
+            published = normalize_datetime(node.findtext("pubDate", ""))
+            if title and link:
+                items.append(
+                    DigestItem(
+                        source=source_name,
+                        title=title,
+                        url=link,
+                        published_at=published,
+                        raw_summary=summary,
+                        category_hint=category_hint,
+                    )
+                )
+        return items
+
+    atom_entries = root.findall(".//atom:entry", namespaces)
+    for node in atom_entries:
+        title = normalize_inline_text(node.findtext("atom:title", "", namespaces))
+        summary = strip_html(
+            node.findtext("atom:summary", "", namespaces)
+            or node.findtext("atom:content", "", namespaces)
+        )
+        link = ""
+        for link_node in node.findall("atom:link", namespaces):
+            href = link_node.attrib.get("href", "").strip()
+            rel = link_node.attrib.get("rel", "alternate")
+            if href and rel == "alternate":
+                link = href
+                break
+        published = normalize_datetime(
+            node.findtext("atom:updated", "", namespaces)
+            or node.findtext("atom:published", "", namespaces)
+        )
+        if title and link:
+            items.append(
+                DigestItem(
+                    source=source_name,
+                    title=title,
+                    url=link,
+                    published_at=published,
+                    raw_summary=summary,
+                    category_hint=category_hint,
+                )
+            )
+    return items
+
+
+def parse_github_trending(html_text: str) -> list[DigestItem]:
+    soup = BeautifulSoup(html_text, "html.parser")
+    items: list[DigestItem] = []
+    for article in soup.select("article.Box-row"):
+        link = article.select_one("h2 a")
+        if not link:
+            continue
+        repo_path = normalize_inline_text(link.get("href", "")).strip("/")
+        title = repo_path.replace("/", " / ")
+        url = f"https://github.com/{repo_path}"
+        description = normalize_inline_text(article.select_one("p").get_text(" ", strip=True) if article.select_one("p") else "")
+        lang = normalize_inline_text(article.select_one('[itemprop="programmingLanguage"]').get_text(" ", strip=True) if article.select_one('[itemprop="programmingLanguage"]') else "")
+        footer = normalize_inline_text(article.get_text(" ", strip=True))
+        stars_today_match = re.search(r"(\d[\d,]*)\s+stars today", footer, re.IGNORECASE)
+        stars_today = stars_today_match.group(1) if stars_today_match else ""
+        signals = []
+        if lang:
+            signals.append(lang)
+        if stars_today:
+            signals.append(f"{stars_today} stars today")
+        items.append(
+            DigestItem(
+                source="GitHub Trending",
+                title=title,
+                url=url,
+                raw_summary=description,
+                signals=signals,
+                metadata={"language": lang, "stars_today": parse_int(stars_today)},
+            )
+        )
+    return items
+
+
+def parse_int(value: str) -> int:
+    try:
+        return int(value.replace(",", "").strip())
+    except Exception:
+        return 0
+
+
+def classify_category(item: DigestItem) -> str:
+    if item.category_hint in CATEGORY_LABELS:
+        return item.category_hint
+
+    text = " ".join(
+        [
+            item.title,
+            item.raw_summary,
+            item.source,
+            item.url,
+            " ".join(signal for signal in item.signals if signal),
+        ]
+    ).lower()
+    scores = {"ai": 0, "cloud": 0, "framework": 0, "free-platform": 0}
+
+    ai_keywords = [
+        "ai",
+        "llm",
+        "model",
+        "agent",
+        "inference",
+        "training",
+        "fine-tuning",
+        "rag",
+        "embedding",
+        "arxiv",
+        "openai",
+        "anthropic",
+        "deepseek",
+        "mistral",
+        "transformer",
+    ]
+    cloud_keywords = [
+        "kubernetes",
+        "k8s",
+        "container",
+        "docker",
+        "serverless",
+        "cloud",
+        "cluster",
+        "platform engineering",
+        "service mesh",
+        "observability",
+        "postgres",
+        "edge runtime",
+        "infra",
+        "wasm",
+        "storage",
+    ]
+    framework_keywords = [
+        "framework",
+        "runtime",
+        "react",
+        "next.js",
+        "nextjs",
+        "vue",
+        "svelte",
+        "angular",
+        "solid",
+        "astro",
+        "vite",
+        "hono",
+        "fastapi",
+        "bun",
+        "deno",
+        "remix",
+        "nuxt",
+    ]
+    free_platform_keywords = [
+        "free plan",
+        "free tier",
+        "free credits",
+        "free deploy",
+        "hosting",
+        "deploy",
+        "deployment",
+        "serverless",
+        "platform",
+        "render",
+        "railway",
+        "fly.io",
+        "vercel",
+        "netlify",
+        "cloudflare workers",
+        "edge",
+        "paas",
+        "free",
+        "pricing",
+    ]
+
+    for word in ai_keywords:
+        if word in text:
+            scores["ai"] += 2
+    for word in cloud_keywords:
+        if word in text:
+            scores["cloud"] += 2
+    for word in framework_keywords:
+        if word in text:
+            scores["framework"] += 2
+    for word in free_platform_keywords:
+        if word in text:
+            scores["free-platform"] += 2
+
+    if item.source.startswith("arXiv"):
+        scores["ai"] += 2
+    if item.source == "GitHub Trending":
+        scores["framework"] += 1
+    if "free plan" in text or "free tier" in text:
+        scores["free-platform"] += 3
+
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else ""
+
+
+def score_item(item: DigestItem) -> float:
+    text = f"{item.title} {item.raw_summary}".lower()
+    score = 0.0
+    if item.category == "free-platform":
+        score += 4
+    elif item.category in {"ai", "cloud", "framework"}:
+        score += 3
+
+    for keyword in [
+        "launch",
+        "launched",
+        "announced",
+        "release",
+        "beta",
+        "ga",
+        "free plan",
+        "free tier",
+        "deploy",
+        "deployment",
+        "runtime",
+    ]:
+        if keyword in text:
+            score += 1.5
+
+    score += min(len(item.raw_summary) / 400.0, 1.5)
+
+    points = int(item.metadata.get("points") or 0)
+    comments = int(item.metadata.get("comments") or 0)
+    stars_today = int(item.metadata.get("stars_today") or 0)
+    score += min(points / 100.0, 3.0)
+    score += min(comments / 80.0, 2.0)
+    score += min(stars_today / 1000.0, 2.0)
+
+    if item.source.startswith("arXiv"):
+        score += 1.2
+    if any(signal for signal in item.signals if signal):
+        score += 0.5
+    return round(score, 2)
+
+
+def select_digest_items(items: list[DigestItem], max_items: int) -> list[DigestItem]:
+    if not items:
+        return []
+    per_category_limit = max(1, max_items // max(len(CATEGORY_ORDER), 1))
+    selected: list[DigestItem] = []
+    seen_urls: set[str] = set()
+
+    grouped = {category: [item for item in items if item.category == category] for category in CATEGORY_ORDER}
+    for category in CATEGORY_ORDER:
+        for item in grouped.get(category, [])[:per_category_limit]:
+            if item.url in seen_urls:
+                continue
+            selected.append(item)
+            seen_urls.add(item.url)
+
+    if len(selected) < max_items:
+        for item in items:
+            if item.url in seen_urls:
+                continue
+            selected.append(item)
+            seen_urls.add(item.url)
+            if len(selected) >= max_items:
+                break
+    return selected[:max_items]
+
+
+def load_history_index(reports_dir: Path, output_root: Path, dedupe_days: int) -> dict[str, set[str]]:
+    urls: set[str] = set()
+    titles: set[str] = set()
+    if not reports_dir.exists():
+        return {"urls": urls, "titles": titles}
+
+    today = datetime.now(timezone.utc).date()
+    root = reports_dir / output_root
+    if not root.exists():
+        return {"urls": urls, "titles": titles}
+
+    for offset in range(1, dedupe_days + 1):
+        date = today - timedelta(days=offset)
+        path = root / date.strftime("%Y/%m/%d.md")
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        urls.update(re.findall(r"<!--\s*digest-item-url:\s*(https?://[^ ]+)\s*-->", text))
+        titles.update(normalize_text(title) for title in re.findall(r"^###\s+(.+)$", text, flags=re.MULTILINE))
+    return {"urls": urls, "titles": {title for title in titles if title}}
+
+
+def is_recent_duplicate(item: DigestItem, history: dict[str, set[str]]) -> bool:
+    if item.url and item.url in history["urls"]:
+        return not has_progress_keyword(item)
+    if item.normalized_title and item.normalized_title in history["titles"]:
+        return not has_progress_keyword(item)
+    return False
+
+
+def has_progress_keyword(item: DigestItem) -> bool:
+    text = f"{item.title} {item.raw_summary}".lower()
+    return any(keyword in text for keyword in PROGRESS_KEYWORDS)
+
+
+def fallback_summaries(items: list[DigestItem]) -> None:
+    for item in items:
+        hydrate_fallback(item)
+
+
+def hydrate_fallback(item: DigestItem) -> None:
+    if not item.summary:
+        base = item.raw_summary or "No extra summary available from the source."
+        item.summary = trim_sentence(base, 180)
+    if not item.reason:
+        item.reason = fallback_reason(item)
+    if not item.tags:
+        item.tags = fallback_tags(item)
+
+
+def trim_sentence(text: str, limit: int) -> str:
+    text = normalize_inline_text(text)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+def fallback_reason(item: DigestItem) -> str:
+    category_reason = {
+        "ai": "This could affect the AI model and tooling landscape you track.",
+        "cloud": "This is relevant to cloud native infrastructure or deployment workflows.",
+        "framework": "This may influence framework and runtime choices in the ecosystem.",
+        "free-platform": "This looks relevant to free deployment options or platform economics.",
+    }
+    return category_reason.get(item.category, "This looks relevant to your tracked themes.")
+
+
+def fallback_tags(item: DigestItem) -> list[str]:
+    tags = [CATEGORY_LABELS.get(item.category, item.category or "signal")]
+    if item.source == "GitHub Trending":
+        language = item.metadata.get("language")
+        if language:
+            tags.append(str(language))
+    if item.source.startswith("arXiv"):
+        tags.append("paper")
+    return sanitize_tags(tags)
+
+
+def sanitize_tags(tags: list[Any]) -> list[str]:
+    cleaned: list[str] = []
+    for tag in tags[:5]:
+        text = normalize_inline_text(str(tag))
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def render_markdown(
+    items: list[DigestItem],
+    generated_at: datetime,
+    source_statuses: list[tuple[str, str]],
+    ai_model: str,
+    dedupe_days: int,
+) -> str:
+    lines = [
+        f"# Daily Tech Digest - {generated_at.strftime('%Y-%m-%d')}",
+        "",
+        f"- Generated at: `{generated_at.isoformat()}`",
+        f"- Dedupe window: `{dedupe_days}` days",
+        f"- AI summarizer: `{ai_model or 'fallback template'}`",
+        "",
+        "## Top Picks",
+        "",
+    ]
+
+    if items:
+        for index, item in enumerate(items[:3], start=1):
+            lines.append(f"{index}. [{escape_md(item.title)}]({item.url})")
+            lines.append(f"   - {escape_md(item.reason or item.summary)}")
+    else:
+        lines.append("No high-signal items were selected today.")
+
+    for category in CATEGORY_ORDER:
+        label = CATEGORY_LABELS[category]
+        lines.extend(["", f"## {label}", ""])
+        category_items = [item for item in items if item.category == category]
+        if not category_items:
+            lines.append("_No selected items today._")
+            continue
+        for item in category_items:
+            tags = ", ".join(item.tags) if item.tags else CATEGORY_LABELS.get(category, category)
+            lines.extend(
+                [
+                    f"<!-- digest-item-url: {item.url} -->",
+                    f"### {escape_md(item.title)}",
+                    f"- Source: `{item.source}`",
+                    f"- Link: [Open]({item.url})",
+                    f"- Published: `{item.published_at or 'unknown'}`",
+                    f"- Summary: {escape_md(item.summary)}",
+                    f"- Why it matters: {escape_md(item.reason)}",
+                    f"- Tags: `{tags}`",
+                    "",
+                ]
+            )
+
+    lines.extend(["## Source Status", ""])
+    if source_statuses:
+        for source, status in source_statuses:
+            lines.append(f"- `{source}`: {escape_md(status)}")
+    else:
+        lines.append("- No source status recorded.")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def escape_md(text: str) -> str:
+    return (text or "").replace("\n", " ").strip()
+
+
+def build_telegram_summary(items: list[DigestItem], generated_at: datetime, ai_used: bool) -> str:
+    top_items = items[:3]
+    by_category = {category: len([item for item in items if item.category == category]) for category in CATEGORY_ORDER}
+    lines = [
+        f"<b>Daily Tech Digest {generated_at.strftime('%Y-%m-%d')}</b>",
+        "",
+        f"共整理 <b>{len(items)}</b> 条高信号内容，AI 总结: <b>{'on' if ai_used else 'fallback'}</b>",
+        f"AI {by_category['ai']} / 云原生 {by_category['cloud']} / 框架 {by_category['framework']} / 免费平台 {by_category['free-platform']}",
+        "",
+        "<b>Top 3</b>",
+    ]
+    for item in top_items:
+        lines.append(f"• <a href=\"{item.url}\">{html_escape(item.title)}</a>")
+    lines.append("")
+    lines.append("完整 Markdown 已附带发送。")
+    return "\n".join(lines)
+
+
+def html_escape(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def build_api_url(base_url: str, path: str) -> str:
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        return root + path
+    return root + "/v1" + path
+
+
+def extract_json(text: str) -> dict[str, Any]:
+    content = (text or "").strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?", "", content).strip()
+        content = re.sub(r"```$", "", content).strip()
+    return json.loads(content)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate daily tech digest")
+    parser.add_argument("--dry-run", action="store_true", help="Generate digest without Telegram side effects")
+    parser.add_argument("--no-telegram", action="store_true", help="Skip Telegram delivery")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    runner = DigestRunner(dry_run=args.dry_run, no_telegram=args.no_telegram)
+    return runner.run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

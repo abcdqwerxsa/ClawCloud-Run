@@ -7,6 +7,7 @@
 > 自动登录保活，当前支持：
 > - ClawCloud（GitHub 登录，支持设备验证 + 两步验证）
 > - Lunes Host（邮箱密码登录，优先复用已登录会话）
+> - Daily Tech Digest（每天抓取 AI / 云原生 / 框架 / 免费平台热点，输出 Markdown 并推送 Telegram）
 
 ![设备验证](./3.png)
 
@@ -35,9 +36,35 @@
 | `LUNES_EMAIL` | Lunes 可选 | Lunes Host 登录邮箱 |
 | `LUNES_PASSWORD` | Lunes 可选 | Lunes Host 登录密码 |
 | `LUNES_STORAGE_STATE` | Lunes 可选 | 自动生成的浏览器会话，建议保留 |
+| `AI_API_KEY` | Digest 可选 | OpenAI-compatible 总结接口密钥，不配则回退为规则摘要 |
 
 > `ClawCloud` 使用 `GH_*` 这组 Secret；`Lunes Host` 使用 `LUNES_*` 这组 Secret。  
-> 两个工作流互相独立，可以只配置你需要的那一组。
+> `Daily Tech Digest` 使用 `TG_*` + `AI_*` + `DIGEST_*` 这组配置。  
+> 三个工作流互相独立，可以只配置你需要的那一组。
+
+### Daily Tech Digest 需要的 Variables
+
+建议在仓库 `Settings -> Secrets and variables -> Actions -> Variables` 里新增下面这些变量：
+
+| Variable 名称 | 默认值 | 说明 |
+|---------------|--------|------|
+| `AI_BASE_URL` | 空 | OpenAI-compatible 接口根地址，例如 `https://your-gateway.example.com/v1` |
+| `AI_MODEL` | 空 | 用于总结的模型名 |
+| `AI_ENABLED` | `true` | 是否启用 AI 总结 |
+| `AI_TIMEOUT_SECONDS` | `60` | AI 请求超时秒数 |
+| `DIGEST_MAX_ITEMS` | `12` | 每日最多保留多少条高信号内容 |
+| `DIGEST_DEDUPE_DAYS` | `7` | 跨天去重窗口 |
+| `DIGEST_OFFICIAL_FEEDS` | 空 | 额外 RSS/Atom 源，支持 JSON 数组或换行分隔 URL |
+| `DIGEST_ARXIV_FEEDS` | 空 | 自定义 arXiv RSS 覆盖项，不填则使用内置默认源 |
+
+`Daily Tech Digest` 默认每天北京时间 `09:00` 执行，对应 workflow: [`.github/workflows/daily-tech-digest.yml`](./.github/workflows/daily-tech-digest.yml)。
+
+### Daily Tech Digest 输出内容
+
+- 默认抓取稳定源：`arXiv RSS`、`Hacker News`、`GitHub Trending`、以及你额外配置的官方 RSS/Atom。
+- 输出文件会自动写到独立 `reports` 分支下的 `reports/digests/YYYY/MM/DD.md`。
+- Telegram 会同时发送：`摘要消息 + 完整 Markdown 文件`。
+- 目前 `X/Twitter` 只预留了适配接口，方便后续接你自己的爬虫结果。
 
 ---
 

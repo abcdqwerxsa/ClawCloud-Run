@@ -1,0 +1,88 @@
+name: Daily Tech Digest
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  daily-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          pip install requests beautifulsoup4 pytest
+
+      - name: 准备 reports 分支工作目录
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPORTS_DIR="$RUNNER_TEMP/reports-branch"
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          if git ls-remote --exit-code --heads "$REPO_URL" reports >/dev/null 2>&1; then
+            git clone --depth 1 --branch reports "$REPO_URL" "$REPORTS_DIR"
+          else
+            git clone --depth 1 "$REPO_URL" "$REPORTS_DIR"
+            cd "$REPORTS_DIR"
+            git switch --orphan reports
+            find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+            mkdir -p reports/digests
+            printf "# Daily Digest Reports\n\nThis branch stores generated markdown digests.\n" > README.md
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+            git add README.md reports
+            git commit -m "chore: initialize reports branch"
+            git push origin reports
+          fi
+
+      - name: 运行日报生成
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          AI_ENABLED: ${{ vars.AI_ENABLED }}
+          AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+          AI_TIMEOUT_SECONDS: ${{ vars.AI_TIMEOUT_SECONDS }}
+          DIGEST_ARXIV_FEEDS: ${{ vars.DIGEST_ARXIV_FEEDS }}
+          DIGEST_OFFICIAL_FEEDS: ${{ vars.DIGEST_OFFICIAL_FEEDS }}
+          DIGEST_MAX_ITEMS: ${{ vars.DIGEST_MAX_ITEMS }}
+          DIGEST_DEDUPE_DAYS: ${{ vars.DIGEST_DEDUPE_DAYS }}
+          DIGEST_REPORTS_DIR: ${{ runner.temp }}/reports-branch
+          DIGEST_OUTPUT_ROOT: reports/digests
+          PYTHONUNBUFFERED: "1"
+        run: python -u scripts/daily_digest.py
+
+      - name: 提交日报到 reports 分支
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPORTS_DIR="$RUNNER_TEMP/reports-branch"
+          cd "$REPORTS_DIR"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add reports/digests
+            git commit -m "chore: update daily digest for $(date -u +%F)"
+            git push origin reports
+          else
+            echo "No digest changes to commit"
+          fi

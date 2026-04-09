@@ -80,6 +80,7 @@ class DigestItem:
     metadata: dict[str, Any] = field(default_factory=dict)
     category: str = ""
     score: float = 0.0
+    chinese_title: str = ""
     summary: str = ""
     reason: str = ""
     tags: list[str] = field(default_factory=list)
@@ -87,6 +88,10 @@ class DigestItem:
     @property
     def normalized_title(self) -> str:
         return normalize_text(self.title)
+
+    @property
+    def display_title(self) -> str:
+        return self.chinese_title or self.title
 
 
 class Telegram:
@@ -356,8 +361,9 @@ class AISummarizer:
               "items": [
                 {
                   "url": "https://...",
-                  "summary": "1-2 句简体中文摘要",
-                  "reason": "1 句简体中文，说明为什么值得关注",
+                  "title_zh": "适合做简报小标题的简体中文标题",
+                  "summary": "2-4 句简体中文摘要，交代这是什么、做了什么、能力或变化点是什么",
+                  "reason": "1-2 句简体中文，说明为什么值得关注、会影响什么",
                   "tags": ["中文标签1", "中文标签2", "英文专有名词也可保留"]
                 }
               ]
@@ -366,7 +372,10 @@ class AISummarizer:
             额外要求：
             - 默认使用简体中文输出
             - 专有名词、项目名、模型名保留原文
-            - summary 和 reason 都要简洁，避免重复
+            - title_zh 必须是中文标题，适合直接作为 Markdown 小标题
+            - 如果原文标题是英文，需要翻译成自然中文，不要生硬直译
+            - summary 需要比普通新闻摘要更具体，不要只写泛泛结论
+            - reason 和 summary 尽量互补，避免重复
             """
         ).strip()
         user_prompt = json.dumps(
@@ -397,11 +406,12 @@ class AISummarizer:
                 entry = by_url.get(item.url)
                 if not entry:
                     continue
+                item.chinese_title = normalize_inline_text(entry.get("title_zh") or "")
                 item.summary = normalize_inline_text(entry.get("summary") or "")
                 item.reason = normalize_inline_text(entry.get("reason") or "")
                 item.tags = sanitize_tags(entry.get("tags") or [])
             for item in items:
-                if not item.summary:
+                if not item.summary or not item.chinese_title:
                     hydrate_fallback(item)
             self.logger.log(f"AI 已完成中文摘要，模型: {self.model}", "SUCCESS")
             return True
@@ -929,9 +939,14 @@ def fallback_summaries(items: list[DigestItem]) -> None:
 
 
 def hydrate_fallback(item: DigestItem) -> None:
+    if not item.chinese_title:
+        item.chinese_title = item.title
     if not item.summary:
-        base = item.raw_summary or "该来源未提供更多摘要信息。"
-        item.summary = trim_sentence(base, 180)
+        parts = [item.raw_summary]
+        if item.signals:
+            parts.append("关键信号：" + "；".join(signal for signal in item.signals if signal))
+        base = " ".join(part for part in parts if part) or "该来源未提供更多摘要信息。"
+        item.summary = trim_sentence(base, 260)
     if not item.reason:
         item.reason = fallback_reason(item)
     if not item.tags:
@@ -995,7 +1010,7 @@ def render_markdown(
 
     if items:
         for index, item in enumerate(items[:3], start=1):
-            lines.append(f"{index}. [{escape_md(item.title)}]({item.url})")
+            lines.append(f"{index}. [{escape_md(item.display_title)}]({item.url})")
             lines.append(f"   - {escape_md(item.reason or item.summary)}")
     else:
         lines.append("今天没有筛选出高信号内容。")
@@ -1012,7 +1027,8 @@ def render_markdown(
             lines.extend(
                 [
                     f"<!-- digest-item-url: {item.url} -->",
-                    f"### {escape_md(item.title)}",
+                    f"### {escape_md(item.display_title)}",
+                    f"- 原文标题: `{escape_md(item.title)}`",
                     f"- 来源: `{item.source}`",
                     f"- 链接: [查看原文]({item.url})",
                     f"- 发布时间: `{item.published_at or 'unknown'}`",
@@ -1049,7 +1065,7 @@ def build_telegram_summary(items: list[DigestItem], generated_at: datetime, ai_u
         "<b>今日 Top 3</b>",
     ]
     for item in top_items:
-        lines.append(f"• <a href=\"{item.url}\">{html_escape(item.title)}</a>")
+        lines.append(f"• <a href=\"{item.url}\">{html_escape(item.display_title)}</a>")
     lines.append("")
     lines.append("完整 Markdown 已附带发送。")
     return "\n".join(lines)

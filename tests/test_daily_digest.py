@@ -131,6 +131,7 @@ def test_render_markdown_contains_fixed_sections():
     item = DigestItem(
         source="Hacker News",
         title="Interesting infra post",
+        chinese_title="有意思的基础设施文章",
         url="https://example.com/post",
         published_at="2026-04-09T01:00:00+00:00",
         raw_summary="A concise summary.",
@@ -154,6 +155,8 @@ def test_render_markdown_contains_fixed_sections():
     assert "## 云原生" in markdown
     assert "## 框架" in markdown
     assert "## 免费平台" in markdown
+    assert "### 有意思的基础设施文章" in markdown
+    assert "- 原文标题: `Interesting infra post`" in markdown
     assert "- 来源: `Hacker News`" in markdown
     assert "- 摘要: 一段简洁摘要。" in markdown
     assert "- 值得关注: 这和平台与部署变化相关。" in markdown

@@ -404,8 +404,24 @@ class LunesKeepAlive:
         self.shot(page, "login_filled")
         time.sleep(2)
 
-        # 检查是否有 Turnstile 验证码
-        if self.is_cf_challenge(page):
+        # 检查是否有 Turnstile 验证码（只要 iframe 或 token input 存在就算）
+        has_turnstile = False
+        try:
+            token_input = page.locator('input[name="cf-turnstile-response"]').first
+            if token_input.is_visible(timeout=2000):
+                has_turnstile = True
+        except Exception:
+            pass
+        if not has_turnstile:
+            try:
+                for f in page.frames:
+                    if "turnstile" in f.url or "challenges.cloudflare.com" in f.url:
+                        has_turnstile = True
+                        break
+            except Exception:
+                pass
+
+        if has_turnstile or self.is_cf_challenge(page):
             self.log("登录表单包含 Cloudflare Turnstile，尝试点击验证")
             self.shot(page, "turnstile_before_click")
 
@@ -437,10 +453,51 @@ class LunesKeepAlive:
             except Exception as e:
                 self.log(f"检查凭据失败: {e}", "WARN")
 
+        # 提交前等待 Turnstile token 就绪
+        try:
+            token_input = page.locator('input[name="cf-turnstile-response"]').first
+            if token_input.is_visible(timeout=3000):
+                self.log("检测到 Turnstile，等待 token 就绪...", "STEP")
+                for i in range(TURNSTILE_WAIT):
+                    val = token_input.input_value(timeout=2000)
+                    if val and len(val) > 10:
+                        self.log("Turnstile token 已就绪", "SUCCESS")
+                        break
+                    if i % 5 == 0:
+                        self.log(f"  等待 Turnstile... ({i}/{TURNSTILE_WAIT}秒)")
+                    # 尝试点击复选框
+                    if i == 5:
+                        self._click_cf_checkbox(page)
+                    time.sleep(1)
+                else:
+                    self.log("Turnstile token 等待超时，仍然尝试提交", "WARN")
+        except Exception as e:
+            self.log(f"Turnstile 检测异常: {e}", "WARN")
+
         # 提交
         try:
-            page.locator('button[type="submit"], .submit-btn').first.click()
-            self.log(f"已点击提交按钮，当前 URL: {page.url}")
+            submit_selectors = [
+                'button:has-text("Continue to dashboard")',
+                'button:has-text("Sign in")',
+                'button:has-text("Log in")',
+                'button[type="submit"]',
+                '.submit-btn',
+            ]
+            clicked = False
+            for sel in submit_selectors:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.is_visible(timeout=2000):
+                        btn.click()
+                        clicked = True
+                        self.log(f"已点击提交按钮（{sel}），当前 URL: {page.url}")
+                        break
+                except Exception:
+                    pass
+            if not clicked:
+                self.log("未找到提交按钮", "ERROR")
+                self.shot(page, "no_submit_btn")
+                return False
         except Exception as e:
             self.log(f"提交失败: {e}", "ERROR")
             return False
@@ -465,6 +522,21 @@ class LunesKeepAlive:
                 return True
 
         self.shot(page, "login_failed")
+
+        # 抓取页面上的错误信息
+        try:
+            for sel in ['.error', '.alert-danger', '[role="alert"]', '.text-red', '.text-error', '.form-error']:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=1500):
+                        err_text = el.inner_text(timeout=2000).strip()
+                        if err_text:
+                            self.log(f"页面错误: {err_text}", "ERROR")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         self.log("登录后仍停留在登录页", "ERROR")
         return False
 

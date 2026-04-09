@@ -34,8 +34,8 @@ jobs:
         env:
           LUNES_EMAIL: ${{ secrets.LUNES_EMAIL_1 }}
           LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD_1 }}
-          LUNES_STORAGE_STATE: ${{ secrets.LUNES_STORAGE_STATE }}
-          LUNES_PROXY_DSN: ${{ secrets.LUNES_PROXY_DSN }}
+          LUNES_STORAGE_STATE: ${{ secrets.LUNES_STORAGE_STATE_1 }}
+          LUNES_PROXY_DSN: ${{ secrets.LUNES_PROXY_DSN_1 }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           REPO_TOKEN: ${{ secrets.REPO_TOKEN }}

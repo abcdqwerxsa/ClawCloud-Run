@@ -56,6 +56,8 @@
 | `DIGEST_DEDUPE_DAYS` | `7` | 跨天去重窗口 |
 | `DIGEST_OFFICIAL_FEEDS` | 空 | 额外 RSS/Atom 源，支持 JSON 数组或换行分隔 URL |
 | `DIGEST_ARXIV_FEEDS` | 空 | 自定义 arXiv RSS 覆盖项，不填则使用内置默认源 |
+| `DIGEST_BROWSER_TARGETS_FILE` | `config/browser_targets.json` | 浏览器爬虫目标配置文件 |
+| `DIGEST_BROWSER_TIMEOUT_SECONDS` | `240` | 浏览器爬虫总超时 |
 
 `Daily Tech Digest` 默认每天北京时间 `09:00` 执行，对应 workflow: [`.github/workflows/daily-tech-digest.yml`](./.github/workflows/daily-tech-digest.yml)。
 
@@ -63,14 +65,39 @@
 - `AI_ENABLED` 不手动配置也可以，默认按 `true` 处理。
 - `AI_BASE_URL` 和 `AI_MODEL` 优先读 `Variables`，也兼容放在 `Secrets`。
 - `AI_API_KEY` 默认从 `Secrets` 读取。
+- 浏览器爬虫默认读取 `config/browser_targets.json`，你也可以通过 `DIGEST_BROWSER_TARGETS_FILE` 指向别的配置文件。
 
 ### Daily Tech Digest 输出内容
 
 - 默认抓取稳定源：`arXiv RSS`、`Hacker News`、`GitHub Trending`、以及你额外配置的官方 RSS/Atom。
+- 已集成 `Lightpanda + Puppeteer/Playwright` 轻量浏览器爬虫层，可抓取任何你在配置里定义的网站。
 - 简报内容默认中文优先，专有名词、项目名、模型名保留原文。
 - 输出文件会自动写到独立 `reports` 分支下的 `reports/digests/YYYY/MM/DD.md`。
 - Telegram 会同时发送：`摘要消息 + 完整 Markdown 文件`。
 - 目前 `X/Twitter` 只预留了适配接口，方便后续接你自己的爬虫结果。
+
+### 浏览器爬虫配置
+
+- 默认配置文件：[`config/browser_targets.json`](./config/browser_targets.json)
+- 示例配置文件：[`config/browser_targets.example.json`](./config/browser_targets.example.json)
+- 仓库已经预置一组 starter targets：`Bun`、`Deno`、`Cloudflare`、`Vercel`、`Railway`、`Fly.io`、`Render`、`Hugging Face`
+- 每个 target 支持：
+  - `engine`: `puppeteer` 或 `playwright`
+  - `steps`: 打开页面、等待元素、点击、输入、滚动、执行页面内脚本
+  - `extract.mode`:
+    - `script`: 直接在页面上下文返回标准化数组，适合复杂站点
+    - `selector`: 用选择器提取列表，适合结构稳定的站点
+
+标准化输出字段：
+
+- `source`
+- `title`
+- `url`
+- `published_at`
+- `raw_summary`
+- `category_hint`
+- `signals`
+- `metadata`
 
 ---
 

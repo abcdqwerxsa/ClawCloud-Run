@@ -17,7 +17,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -300,6 +302,74 @@ class XAdapter(SourceAdapter):
         return []
 
 
+class BrowserCrawlerAdapter(SourceAdapter):
+    name = "browser-crawler"
+
+    def __init__(self, session: requests.Session, logger: Logger, config_path: Path, timeout_seconds: int = 240):
+        super().__init__(session, logger)
+        self.config_path = config_path
+        self.timeout_seconds = timeout_seconds
+
+    def fetch(self) -> list[DigestItem]:
+        if not self.config_path.exists():
+            self.logger.source_status("Browser Crawler", f"skipped (config missing: {self.config_path})")
+            return []
+
+        try:
+            config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self.logger.source_status("Browser Crawler", f"error: invalid config ({exc})")
+            self.logger.log(f"Browser crawler config invalid: {exc}", "WARN")
+            return []
+
+        targets = [entry for entry in (config.get("targets") or []) if entry.get("enabled", True)]
+        if not targets:
+            self.logger.source_status("Browser Crawler", "skipped (no enabled targets)")
+            return []
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as handle:
+            output_path = Path(handle.name)
+
+        command = [
+            "node",
+            "scripts/browser_crawler.mjs",
+            "--config",
+            str(self.config_path),
+            "--output",
+            str(output_path),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            items = [digest_item_from_payload(entry) for entry in payload]
+            items = [item for item in items if item]
+            self.logger.source_status("Browser Crawler", f"ok ({len(items)} items)")
+            if result.stderr.strip():
+                self.logger.log(f"Browser crawler stderr: {trim_sentence(result.stderr.strip(), 240)}", "INFO")
+            return items
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or exc.stdout or "").strip()
+            self.logger.source_status("Browser Crawler", "error: crawler command failed")
+            self.logger.log(f"Browser crawler failed: {trim_sentence(stderr, 240)}", "WARN")
+            return []
+        except subprocess.TimeoutExpired:
+            self.logger.source_status("Browser Crawler", "error: timeout")
+            self.logger.log("Browser crawler timed out", "WARN")
+            return []
+        except Exception as exc:
+            self.logger.source_status("Browser Crawler", f"error: {exc}")
+            self.logger.log(f"Browser crawler parse failed: {exc}", "WARN")
+            return []
+        finally:
+            output_path.unlink(missing_ok=True)
+
+
 class AISummarizer:
     def __init__(self, logger: Logger):
         self.logger = logger
@@ -485,11 +555,18 @@ class DigestRunner:
 
     def collect_items(self) -> list[DigestItem]:
         official_feeds = parse_feed_config(os.environ.get("DIGEST_OFFICIAL_FEEDS", ""))
+        browser_config = Path(os.environ.get("DIGEST_BROWSER_TARGETS_FILE", "config/browser_targets.json")).resolve()
         adapters: list[SourceAdapter] = [
             ArxivAdapter(self.session, self.logger, parse_feed_config(os.environ.get("DIGEST_ARXIV_FEEDS", ""), DEFAULT_ARXIV_FEEDS)),
             HackerNewsAdapter(self.session, self.logger),
             GitHubTrendingAdapter(self.session, self.logger),
             OfficialFeedAdapter(self.session, self.logger, official_feeds),
+            BrowserCrawlerAdapter(
+                self.session,
+                self.logger,
+                browser_config,
+                timeout_seconds=env_int("DIGEST_BROWSER_TIMEOUT_SECONDS", 240),
+            ),
             XAdapter(self.session, self.logger),
         ]
         items: list[DigestItem] = []
@@ -716,6 +793,27 @@ def parse_int(value: str) -> int:
         return int(value.replace(",", "").strip())
     except Exception:
         return 0
+
+
+def digest_item_from_payload(payload: dict[str, Any]) -> DigestItem | None:
+    if not isinstance(payload, dict):
+        return None
+    title = normalize_inline_text(str(payload.get("title") or ""))
+    url = normalize_inline_text(str(payload.get("url") or ""))
+    if not title or not url:
+        return None
+    signals = payload.get("signals") or []
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    return DigestItem(
+        source=normalize_inline_text(str(payload.get("source") or "Browser Crawler")),
+        title=title,
+        url=url,
+        published_at=normalize_datetime(str(payload.get("published_at") or "")),
+        raw_summary=normalize_inline_text(str(payload.get("raw_summary") or "")),
+        category_hint=normalize_inline_text(str(payload.get("category_hint") or "")),
+        signals=[normalize_inline_text(str(item)) for item in signals if normalize_inline_text(str(item))],
+        metadata=metadata,
+    )
 
 
 def classify_category(item: DigestItem) -> str:

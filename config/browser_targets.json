@@ -1,0 +1,204 @@
+{
+  "targets": [
+    {
+      "name": "Bun Blog",
+      "engine": "puppeteer",
+      "url": "https://bun.sh/blog",
+      "category_hint": "framework",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://bun.sh/blog",
+          "waitUntil": "networkidle0"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/blog/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 12 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'bun', 'framework'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Deno Blog",
+      "engine": "playwright",
+      "url": "https://deno.com/blog",
+      "category_hint": "framework",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://deno.com/blog",
+          "waitUntil": "networkidle"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/blog/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 12 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'deno', 'framework'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Cloudflare Blog",
+      "engine": "playwright",
+      "url": "https://blog.cloudflare.com/",
+      "category_hint": "cloud",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://blog.cloudflare.com/",
+          "waitUntil": "networkidle"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "article a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const nodes = Array.from(document.querySelectorAll('article')); const items = []; const seen = new Set(); for (const article of nodes) { const link = article.querySelector('a[href]'); const titleNode = article.querySelector('h2, h3'); const timeNode = article.querySelector('time'); const title = (titleNode?.textContent || link?.textContent || '').trim(); const href = link?.getAttribute('href') || ''; if (!title || !href || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, published_at: timeNode?.getAttribute('datetime') || '', raw_summary: (article.textContent || '').trim(), signals: ['browser-crawler', 'cloudflare', 'cloud'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Vercel Changelog",
+      "engine": "puppeteer",
+      "url": "https://vercel.com/changelog",
+      "category_hint": "free-platform",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://vercel.com/changelog",
+          "waitUntil": "networkidle0"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/changelog/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 10 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'vercel', 'platform'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Railway Blog",
+      "engine": "puppeteer",
+      "url": "https://blog.railway.com/",
+      "category_hint": "free-platform",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://blog.railway.com/",
+          "waitUntil": "networkidle0"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/p/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 10 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'railway', 'platform'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Fly.io Blog",
+      "engine": "playwright",
+      "url": "https://fly.io/blog/",
+      "category_hint": "free-platform",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://fly.io/blog/",
+          "waitUntil": "networkidle"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/blog/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 10 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'fly.io', 'platform'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Render Changelog",
+      "engine": "puppeteer",
+      "url": "https://render.com/changelog",
+      "category_hint": "free-platform",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://render.com/changelog",
+          "waitUntil": "networkidle0"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/changelog/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 10 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'render', 'platform'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    },
+    {
+      "name": "Hugging Face Blog",
+      "engine": "playwright",
+      "url": "https://huggingface.co/blog",
+      "category_hint": "ai",
+      "limit": 5,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://huggingface.co/blog",
+          "waitUntil": "networkidle"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('a[href]')); const seen = new Set(); const items = []; for (const link of links) { const href = link.getAttribute('href') || ''; if (!href.includes('/blog/')) continue; const title = (link.textContent || '').trim(); if (!title || title.length < 10 || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'huggingface', 'ai'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 5
+        }
+      }
+    }
+  ]
+}

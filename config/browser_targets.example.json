@@ -1,0 +1,54 @@
+{
+  "targets": [
+    {
+      "name": "Bun Blog",
+      "engine": "puppeteer",
+      "url": "https://bun.sh/blog",
+      "category_hint": "framework",
+      "limit": 6,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://bun.sh/blog",
+          "waitUntil": "networkidle0"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "main a[href*='/blog/']"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const links = Array.from(document.querySelectorAll('main a[href*=\"/blog/\"]')); const seen = new Set(); const items = []; for (const link of links) { const title = (link.textContent || '').trim(); const href = link.getAttribute('href') || ''; if (!title || !href || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, raw_summary: title, signals: ['browser-crawler', 'bun'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 6
+        }
+      }
+    },
+    {
+      "name": "Cloudflare Blog",
+      "engine": "playwright",
+      "url": "https://blog.cloudflare.com/",
+      "category_hint": "cloud",
+      "limit": 6,
+      "steps": [
+        {
+          "action": "goto",
+          "url": "https://blog.cloudflare.com/",
+          "waitUntil": "networkidle"
+        },
+        {
+          "action": "waitForSelector",
+          "selector": "article a[href]"
+        }
+      ],
+      "extract": {
+        "mode": "script",
+        "script": "({ limit }) => { const nodes = Array.from(document.querySelectorAll('article')); const items = []; const seen = new Set(); for (const article of nodes) { const link = article.querySelector('a[href]'); const titleNode = article.querySelector('h2, h3'); const timeNode = article.querySelector('time'); const title = (titleNode?.textContent || link?.textContent || '').trim(); const href = link?.getAttribute('href') || ''; if (!title || !href || seen.has(href)) continue; seen.add(href); items.push({ title, url: href, published_at: timeNode?.getAttribute('datetime') || '', raw_summary: (article.textContent || '').trim(), signals: ['browser-crawler', 'cloudflare'] }); if (items.length >= limit) break; } return items; }",
+        "args": {
+          "limit": 6
+        }
+      }
+    }
+  ]
+}

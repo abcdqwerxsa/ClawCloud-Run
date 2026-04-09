@@ -1,0 +1,13 @@
+{
+  "name": "clawcloud-run",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install:lightpanda": "node scripts/install_lightpanda.mjs",
+    "crawl:browser": "node scripts/browser_crawler.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.54.2",
+    "puppeteer-core": "^24.22.3"
+  }
+}

@@ -13,6 +13,7 @@ SPEC.loader.exec_module(daily_digest)
 DigestItem = daily_digest.DigestItem
 build_api_url = daily_digest.build_api_url
 classify_category = daily_digest.classify_category
+digest_item_from_payload = daily_digest.digest_item_from_payload
 is_recent_duplicate = daily_digest.is_recent_duplicate
 load_history_index = daily_digest.load_history_index
 parse_feed_config = daily_digest.parse_feed_config
@@ -125,6 +126,29 @@ def test_classification_and_scoring_prioritize_free_platform_signal():
 
     assert item.category == "free-platform"
     assert item.score >= 6
+
+
+def test_digest_item_from_payload_normalizes_browser_output():
+    item = digest_item_from_payload(
+        {
+            "source": "Browser Target",
+            "title": " Bun launches edge deploy ",
+            "url": "https://bun.example/blog",
+            "published_at": "2026-04-09T00:00:00Z",
+            "raw_summary": "A browser crawler extracted this item.",
+            "category_hint": "framework",
+            "signals": ["browser-crawler", "bun"],
+            "metadata": {"origin": "lightpanda"},
+        }
+    )
+
+    assert item is not None
+    assert item.source == "Browser Target"
+    assert item.title == "Bun launches edge deploy"
+    assert item.url == "https://bun.example/blog"
+    assert item.category_hint == "framework"
+    assert item.signals == ["browser-crawler", "bun"]
+    assert item.metadata == {"origin": "lightpanda"}
 
 
 def test_render_markdown_contains_fixed_sections():

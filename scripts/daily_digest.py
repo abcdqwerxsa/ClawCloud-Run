@@ -311,7 +311,7 @@ class AISummarizer:
         if not items:
             return False
         if not self.can_use():
-            self.logger.log("AI summarizer unavailable, using fallback summaries", "WARN")
+            self.logger.log("未配置 AI 摘要接口，改用规则摘要", "WARN")
             fallback_summaries(items)
             return False
 
@@ -329,24 +329,30 @@ class AISummarizer:
         ]
         system_prompt = textwrap.dedent(
             """
-            You are a technical intelligence analyst for a founder/operator.
-            Summarize only the concrete signal. Focus on:
-            - AI models, infra, and tooling
-            - cloud native tooling and platform shifts
-            - developer frameworks and runtimes
-            - free deployment platforms, new free tiers, or product launches relevant to deployment
+            你是一个技术情报分析助手，面向关注 AI、云原生、开发框架和免费部署平台的中文用户。
+            只总结有明确价值的技术信号，不要写空泛评价。
+            重点关注：
+            - AI 模型、基础设施、推理、工具链
+            - 云原生工具、平台变化、部署能力
+            - 开发框架、运行时、热门工程趋势
+            - 免费部署平台、新免费套餐、定价变化、产品发布
 
-            Return strict JSON:
+            输出必须是严格 JSON：
             {
               "items": [
                 {
                   "url": "https://...",
-                  "summary": "1-2 short sentences",
-                  "reason": "why this matters in one sentence",
-                  "tags": ["tag1", "tag2", "tag3"]
+                  "summary": "1-2 句简体中文摘要",
+                  "reason": "1 句简体中文，说明为什么值得关注",
+                  "tags": ["中文标签1", "中文标签2", "英文专有名词也可保留"]
                 }
               ]
             }
+
+            额外要求：
+            - 默认使用简体中文输出
+            - 专有名词、项目名、模型名保留原文
+            - summary 和 reason 都要简洁，避免重复
             """
         ).strip()
         user_prompt = json.dumps(
@@ -383,10 +389,10 @@ class AISummarizer:
             for item in items:
                 if not item.summary:
                     hydrate_fallback(item)
-            self.logger.log(f"AI summaries generated with model {self.model}", "SUCCESS")
+            self.logger.log(f"AI 已完成中文摘要，模型: {self.model}", "SUCCESS")
             return True
         except Exception as exc:
-            self.logger.log(f"AI summarization failed: {exc}", "WARN")
+            self.logger.log(f"AI 摘要失败: {exc}", "WARN")
             fallback_summaries(items)
             return False
 
@@ -404,7 +410,7 @@ class AISummarizer:
             return response.json()
 
         self.logger.log(
-            f"AI endpoint rejected response_format ({response.status_code}), retrying without it",
+            f"AI 接口不接受 response_format ({response.status_code})，改为无该参数重试",
             "WARN",
         )
         response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
@@ -495,12 +501,12 @@ class DigestRunner:
         sent_text = self.telegram.send(summary)
         sent_file = self.telegram.document(
             markdown_path,
-            caption=f"Daily Tech Digest {self.generated_at.strftime('%Y-%m-%d')}",
+            caption=f"每日技术简报 {self.generated_at.strftime('%Y-%m-%d')}",
         )
         if sent_text or sent_file:
-            self.logger.log("Telegram notification delivered", "SUCCESS")
+            self.logger.log("Telegram 通知已发送", "SUCCESS")
         elif self.telegram.ok:
-            self.logger.log("Telegram delivery failed", "WARN")
+            self.logger.log("Telegram 发送失败", "WARN")
 
 
 def parse_bool(value: str) -> bool:
@@ -910,7 +916,7 @@ def fallback_summaries(items: list[DigestItem]) -> None:
 
 def hydrate_fallback(item: DigestItem) -> None:
     if not item.summary:
-        base = item.raw_summary or "No extra summary available from the source."
+        base = item.raw_summary or "该来源未提供更多摘要信息。"
         item.summary = trim_sentence(base, 180)
     if not item.reason:
         item.reason = fallback_reason(item)
@@ -927,12 +933,12 @@ def trim_sentence(text: str, limit: int) -> str:
 
 def fallback_reason(item: DigestItem) -> str:
     category_reason = {
-        "ai": "This could affect the AI model and tooling landscape you track.",
-        "cloud": "This is relevant to cloud native infrastructure or deployment workflows.",
-        "framework": "This may influence framework and runtime choices in the ecosystem.",
-        "free-platform": "This looks relevant to free deployment options or platform economics.",
+        "ai": "这条信息可能影响你关注的 AI 模型、工具链或基础设施方向。",
+        "cloud": "这条信息与云原生基础设施、部署能力或平台演进相关。",
+        "framework": "这条信息可能影响框架、运行时或开发栈选择。",
+        "free-platform": "这条信息与免费部署平台、免费套餐或平台机会直接相关。",
     }
-    return category_reason.get(item.category, "This looks relevant to your tracked themes.")
+    return category_reason.get(item.category, "这条信息与你当前跟踪的主题相关。")
 
 
 def fallback_tags(item: DigestItem) -> list[str]:
@@ -963,13 +969,13 @@ def render_markdown(
     dedupe_days: int,
 ) -> str:
     lines = [
-        f"# Daily Tech Digest - {generated_at.strftime('%Y-%m-%d')}",
+        f"# 每日技术简报 - {generated_at.strftime('%Y-%m-%d')}",
         "",
-        f"- Generated at: `{generated_at.isoformat()}`",
-        f"- Dedupe window: `{dedupe_days}` days",
-        f"- AI summarizer: `{ai_model or 'fallback template'}`",
+        f"- 生成时间: `{generated_at.isoformat()}`",
+        f"- 去重窗口: `{dedupe_days}` 天",
+        f"- AI 摘要: `{ai_model or '规则回退模板'}`",
         "",
-        "## Top Picks",
+        "## 今日重点",
         "",
     ]
 
@@ -978,14 +984,14 @@ def render_markdown(
             lines.append(f"{index}. [{escape_md(item.title)}]({item.url})")
             lines.append(f"   - {escape_md(item.reason or item.summary)}")
     else:
-        lines.append("No high-signal items were selected today.")
+        lines.append("今天没有筛选出高信号内容。")
 
     for category in CATEGORY_ORDER:
         label = CATEGORY_LABELS[category]
         lines.extend(["", f"## {label}", ""])
         category_items = [item for item in items if item.category == category]
         if not category_items:
-            lines.append("_No selected items today._")
+            lines.append("_今天该栏目暂无入选内容。_")
             continue
         for item in category_items:
             tags = ", ".join(item.tags) if item.tags else CATEGORY_LABELS.get(category, category)
@@ -993,22 +999,22 @@ def render_markdown(
                 [
                     f"<!-- digest-item-url: {item.url} -->",
                     f"### {escape_md(item.title)}",
-                    f"- Source: `{item.source}`",
-                    f"- Link: [Open]({item.url})",
-                    f"- Published: `{item.published_at or 'unknown'}`",
-                    f"- Summary: {escape_md(item.summary)}",
-                    f"- Why it matters: {escape_md(item.reason)}",
-                    f"- Tags: `{tags}`",
+                    f"- 来源: `{item.source}`",
+                    f"- 链接: [查看原文]({item.url})",
+                    f"- 发布时间: `{item.published_at or 'unknown'}`",
+                    f"- 摘要: {escape_md(item.summary)}",
+                    f"- 值得关注: {escape_md(item.reason)}",
+                    f"- 标签: `{tags}`",
                     "",
                 ]
             )
 
-    lines.extend(["## Source Status", ""])
+    lines.extend(["## 数据源状态", ""])
     if source_statuses:
         for source, status in source_statuses:
             lines.append(f"- `{source}`: {escape_md(status)}")
     else:
-        lines.append("- No source status recorded.")
+        lines.append("- 本次未记录数据源状态。")
 
     return "\n".join(lines).strip() + "\n"
 
@@ -1021,12 +1027,12 @@ def build_telegram_summary(items: list[DigestItem], generated_at: datetime, ai_u
     top_items = items[:3]
     by_category = {category: len([item for item in items if item.category == category]) for category in CATEGORY_ORDER}
     lines = [
-        f"<b>Daily Tech Digest {generated_at.strftime('%Y-%m-%d')}</b>",
+        f"<b>每日技术简报 {generated_at.strftime('%Y-%m-%d')}</b>",
         "",
-        f"共整理 <b>{len(items)}</b> 条高信号内容，AI 总结: <b>{'on' if ai_used else 'fallback'}</b>",
+        f"共整理 <b>{len(items)}</b> 条高信号内容，AI 摘要: <b>{'已启用' if ai_used else '规则回退'}</b>",
         f"AI {by_category['ai']} / 云原生 {by_category['cloud']} / 框架 {by_category['framework']} / 免费平台 {by_category['free-platform']}",
         "",
-        "<b>Top 3</b>",
+        "<b>今日 Top 3</b>",
     ]
     for item in top_items:
         lines.append(f"• <a href=\"{item.url}\">{html_escape(item.title)}</a>")

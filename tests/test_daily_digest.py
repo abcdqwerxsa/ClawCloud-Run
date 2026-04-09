@@ -87,7 +87,7 @@ def test_history_index_detects_recent_duplicates(tmp_path: Path):
     digest_path.write_text(
         "\n".join(
             [
-                "# Daily Tech Digest - 2026-04-08",
+                "# 每日技术简报 - 2026-04-08",
                 "<!-- digest-item-url: https://example.com/bun-cloud -->",
                 "### Bun launches free edge platform",
             ]
@@ -135,8 +135,8 @@ def test_render_markdown_contains_fixed_sections():
         published_at="2026-04-09T01:00:00+00:00",
         raw_summary="A concise summary.",
         category="cloud",
-        summary="A concise summary.",
-        reason="Relevant to platform and deployment changes.",
+        summary="一段简洁摘要。",
+        reason="这和平台与部署变化相关。",
         tags=["cloud", "deploy"],
     )
 
@@ -148,11 +148,15 @@ def test_render_markdown_contains_fixed_sections():
         dedupe_days=7,
     )
 
-    assert "# Daily Tech Digest - 2026-04-09" in markdown
+    assert "# 每日技术简报 - 2026-04-09" in markdown
+    assert "## 今日重点" in markdown
     assert "## AI" in markdown
     assert "## 云原生" in markdown
     assert "## 框架" in markdown
     assert "## 免费平台" in markdown
+    assert "- 来源: `Hacker News`" in markdown
+    assert "- 摘要: 一段简洁摘要。" in markdown
+    assert "- 值得关注: 这和平台与部署变化相关。" in markdown
     assert "<!-- digest-item-url: https://example.com/post -->" in markdown
 
 

@@ -62,6 +62,7 @@
 ### Daily Tech Digest 输出内容
 
 - 默认抓取稳定源：`arXiv RSS`、`Hacker News`、`GitHub Trending`、以及你额外配置的官方 RSS/Atom。
+- 简报内容默认中文优先，专有名词、项目名、模型名保留原文。
 - 输出文件会自动写到独立 `reports` 分支下的 `reports/digests/YYYY/MM/DD.md`。
 - Telegram 会同时发送：`摘要消息 + 完整 Markdown 文件`。
 - 目前 `X/Twitter` 只预留了适配接口，方便后续接你自己的爬虫结果。

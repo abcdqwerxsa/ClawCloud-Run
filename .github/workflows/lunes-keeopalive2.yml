@@ -1,0 +1,47 @@
+name: Lunes Host 登录保活-oilweq1
+on:
+  schedule:
+    - cron: '0 0 */7 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lunes-keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          pip install patchright requests pynacl
+          patchright install chromium
+          patchright install-deps
+
+      - name: 运行 Lunes 保活
+        env:
+          LUNES_EMAIL: ${{ secrets.LUNES_EMAIL }}
+          LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD }}
+          LUNES_STORAGE_STATE: ${{ secrets.LUNES_STORAGE_STATE }}
+          LUNES_PROXY_DSN: ${{ secrets.LUNES_PROXY_DSN }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+          PYTHONUNBUFFERED: "1"
+          DISPLAY: ":99"
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          python -u scripts/lunes_keepalive.py

@@ -32,8 +32,8 @@ jobs:
 
       - name: 运行 Lunes 保活
         env:
-          LUNES_EMAIL: ${{ secrets.LUNES_EMAIL }}
-          LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD }}
+          LUNES_EMAIL: ${{ secrets.LUNES_EMAIL_1 }}
+          LUNES_PASSWORD: ${{ secrets.LUNES_PASSWORD_1 }}
           LUNES_STORAGE_STATE: ${{ secrets.LUNES_STORAGE_STATE }}
           LUNES_PROXY_DSN: ${{ secrets.LUNES_PROXY_DSN }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}

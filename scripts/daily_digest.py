@@ -629,19 +629,20 @@ class DigestRunner:
     def send_notifications(self, items: list[DigestItem], markdown_path: Path, ai_used: bool) -> None:
         summary = build_telegram_summary(items, self.generated_at, ai_used)
         sent_text = self.telegram.send(summary)
+        date_str = self.generated_at.strftime('%Y-%m-%d')
 
         # Render markdown to a single long-page image via marknative
         image_path = self._render_preview(markdown_path)
         sent_image = False
         if image_path:
-            sent_image = self.telegram.photo(
+            sent_image = self.telegram.document(
                 image_path,
-                caption=f"每日技术简报 {self.generated_at.strftime('%Y-%m-%d')}",
+                caption=f"每日技术简报 {date_str}",
             )
 
         sent_file = self.telegram.document(
             markdown_path,
-            caption=f"每日技术简报 {self.generated_at.strftime('%Y-%m-%d')} (源文件)",
+            caption=f"每日技术简报 {date_str} (源文件)",
         )
         if sent_text or sent_file or sent_image:
             self.logger.log("Telegram 通知已发送", "SUCCESS")

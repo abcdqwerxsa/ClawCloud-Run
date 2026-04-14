@@ -144,6 +144,8 @@ class Telegram:
                     files={"photo": (image_path.name, handle, "image/png")},
                     timeout=60,
                 )
+            if response.status_code != 200:
+                self.logger.log(f"Telegram sendPhoto error {response.status_code}: {response.text[:300]}", "WARN")
             return response.status_code == 200
         except Exception as exc:  # pragma: no cover
             self.logger.log(f"Telegram sendPhoto failed: {exc}", "WARN")

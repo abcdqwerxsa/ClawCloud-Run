@@ -120,12 +120,13 @@ class Telegram:
     def document(self, path: Path, caption: str = "") -> bool:
         if not self.ok or not path.exists():
             return False
+        mime = "image/png" if path.suffix == ".png" else "text/markdown"
         try:
             with path.open("rb") as handle:
                 response = requests.post(
                     f"https://api.telegram.org/bot{self.token}/sendDocument",
                     data={"chat_id": self.chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
-                    files={"document": (path.name, handle, "text/markdown")},
+                    files={"document": (path.name, handle, mime)},
                     timeout=60,
                 )
             return response.status_code == 200

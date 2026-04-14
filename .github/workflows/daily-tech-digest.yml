@@ -29,6 +29,9 @@ jobs:
         with:
           node-version: "22"
 
+      - name: 安装中文字体
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+
       - name: 安装依赖
         run: |
           pip install requests beautifulsoup4 pytest

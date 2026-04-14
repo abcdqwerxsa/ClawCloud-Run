@@ -37,7 +37,7 @@ const pages = await renderMarkdown(md, {
   format: "png",
   singlePage: true,
   scale: 1,
-  theme: "default",
+  theme: { page: { width: 1600 } },
 });
 
 const first = pages[0];

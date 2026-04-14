@@ -632,14 +632,13 @@ class DigestRunner:
         sent_text = self.telegram.send(summary)
         date_str = self.generated_at.strftime('%Y-%m-%d')
 
-        # Render markdown to a single long-page image via marknative
-        image_path = self._render_preview(markdown_path)
+        # Render markdown to paginated images via marknative
+        image_paths = self._render_preview(markdown_path)
         sent_image = False
-        if image_path:
-            sent_image = self.telegram.document(
-                image_path,
-                caption=f"每日技术简报 {date_str}",
-            )
+        for i, img_path in enumerate(image_paths[:10]):
+            caption = f"每日技术简报 {date_str} ({i + 1}/{len(image_paths)})" if i == 0 else ""
+            if self.telegram.photo(img_path, caption=caption):
+                sent_image = True
 
         sent_file = self.telegram.document(
             markdown_path,
@@ -650,28 +649,29 @@ class DigestRunner:
         elif self.telegram.ok:
             self.logger.log("Telegram 发送失败", "WARN")
 
-    def _render_preview(self, markdown_path: Path) -> Path | None:
-        """Render markdown to a single long-page PNG image using marknative."""
+    def _render_preview(self, markdown_path: Path) -> list[Path]:
+        """Render markdown to paginated PNG images using marknative."""
         try:
             import subprocess
 
             render_script = Path(__file__).resolve().parent / "render_markdown.mjs"
-            output_path = markdown_path.with_suffix(".png")
+            output_prefix = markdown_path.with_suffix("")
             result = subprocess.run(
-                ["node", str(render_script), str(markdown_path), str(output_path)],
+                ["node", str(render_script), str(markdown_path), str(output_prefix)],
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
             if result.returncode == 0 and result.stdout.strip():
-                rendered = Path(result.stdout.strip())
-                if rendered.exists():
-                    self.logger.log(f"Markdown 已渲染为长图: {rendered}", "INFO")
-                    return rendered
+                paths = [Path(p) for p in result.stdout.strip().splitlines() if p.strip()]
+                existing = [p for p in paths if p.exists()]
+                if existing:
+                    self.logger.log(f"Markdown 已渲染为 {len(existing)} 张图片", "INFO")
+                    return existing
             self.logger.log(f"marknative 渲染失败: {result.stderr.strip()}", "WARN")
         except Exception as exc:  # pragma: no cover
             self.logger.log(f"marknative 渲染异常: {exc}", "WARN")
-        return None
+        return []
 
 
 def parse_bool(value: str) -> bool:

@@ -133,6 +133,22 @@ class Telegram:
             self.logger.log(f"Telegram sendDocument failed: {exc}", "WARN")
             return False
 
+    def photo(self, image_path: Path, caption: str = "") -> bool:
+        if not self.ok or not image_path.exists():
+            return False
+        try:
+            with image_path.open("rb") as handle:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.token}/sendPhoto",
+                    data={"chat_id": self.chat_id, "caption": caption[:1024], "parse_mode": "HTML"},
+                    files={"photo": (image_path.name, handle, "image/png")},
+                    timeout=60,
+                )
+            return response.status_code == 200
+        except Exception as exc:  # pragma: no cover
+            self.logger.log(f"Telegram sendPhoto failed: {exc}", "WARN")
+            return False
+
 
 class Logger:
     def __init__(self):
@@ -611,14 +627,47 @@ class DigestRunner:
     def send_notifications(self, items: list[DigestItem], markdown_path: Path, ai_used: bool) -> None:
         summary = build_telegram_summary(items, self.generated_at, ai_used)
         sent_text = self.telegram.send(summary)
+
+        # Render markdown to a single long-page image via marknative
+        image_path = self._render_preview(markdown_path)
+        sent_image = False
+        if image_path:
+            sent_image = self.telegram.photo(
+                image_path,
+                caption=f"每日技术简报 {self.generated_at.strftime('%Y-%m-%d')}",
+            )
+
         sent_file = self.telegram.document(
             markdown_path,
-            caption=f"每日技术简报 {self.generated_at.strftime('%Y-%m-%d')}",
+            caption=f"每日技术简报 {self.generated_at.strftime('%Y-%m-%d')} (源文件)",
         )
-        if sent_text or sent_file:
+        if sent_text or sent_file or sent_image:
             self.logger.log("Telegram 通知已发送", "SUCCESS")
         elif self.telegram.ok:
             self.logger.log("Telegram 发送失败", "WARN")
+
+    def _render_preview(self, markdown_path: Path) -> Path | None:
+        """Render markdown to a single long-page PNG image using marknative."""
+        try:
+            import subprocess
+
+            render_script = Path(__file__).resolve().parent / "render_markdown.mjs"
+            output_path = markdown_path.with_suffix(".png")
+            result = subprocess.run(
+                ["node", str(render_script), str(markdown_path), str(output_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                rendered = Path(result.stdout.strip())
+                if rendered.exists():
+                    self.logger.log(f"Markdown 已渲染为长图: {rendered}", "INFO")
+                    return rendered
+            self.logger.log(f"marknative 渲染失败: {result.stderr.strip()}", "WARN")
+        except Exception as exc:  # pragma: no cover
+            self.logger.log(f"marknative 渲染异常: {exc}", "WARN")
+        return None
 
 
 def parse_bool(value: str) -> bool:
